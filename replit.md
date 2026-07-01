@@ -1,36 +1,61 @@
-# [Project name]
+# Dragon Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+بوت Discord لإدارة متجر الرومات في سيرفر Dragon — يدعم الشراء عبر ProBot، تذاكر الدعم، رصيد المنشنات، AutoMod، وحماية الرومات.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/api-server run dev` — تشغيل السيرفر + البوت (port 8080)
+- `pnpm run typecheck` — فحص الأنواع
+- `pnpm run build` — بناء المشروع
+- `pnpm --filter @workspace/db run push` — تطبيق تغييرات الـ DB schema
+
+## Required Secrets
+
+- `DISCORD_TOKEN` — توكن البوت من Discord Developer Portal
+- `OWNER_ID` — Discord User ID لصاحب السيرفر
+- `GUILD_ID` — Discord Guild ID للسيرفر
+- `DATABASE_URL` — يُوفَّر تلقائياً من Replit
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
 - API: Express 5
+- Discord: discord.js v14
 - DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- Build: esbuild
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/api-server/src/bot.ts` — الكود الرئيسي للبوت
+- `artifacts/api-server/assets/` — الصور (dragon_banner.webp, dragon_text_banner.webp, dragon.webp)
+- `lib/db/src/schema/index.ts` — DB schema: rooms, purchases, bot_users, warnings
+- `artifacts/api-server/src/index.ts` — entry point يشغّل السيرفر + البوت
+
+## Bot Features
+
+- `/shop` — بانل المتجر مع أزرار الفئات
+- `/myroom` — عرض رومات المستخدم
+- `/transferroom` — تحويل ملكية روم
+- `/addroom`, `/listrooms`, `/deleteroom` — إدارة الرومات (Admin فقط)
+- `/synccategories`, `/setcategoryid` — ربط الرومات بالكاتيجوريهات
+- `/givebalance` — إضافة رصيد منشنات (Admin فقط)
+- AutoMod: حجب كلمات محظورة + حجب منشنات بدون رصيد
+- حماية رومات العملاء: لينكات، تشفير، اسبام منشنات
+
+## Assets
+
+| الملف | الوصف |
+|-------|--------|
+| `dragon_banner.webp` | بانر كبير في /shop وبعد إنشاء الروم |
+| `dragon_text_banner.webp` | بانر قائمة الفئات |
+| `dragon.webp` | صورة thumbnail جنب تفاصيل الروم (لو موجودة) |
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
-
-## Product
-
-_Describe the high-level user-facing capabilities of this app once they exist._
+- البوت يشتغل جنب Express server في نفس الـ process
+- الـ DB schema مبني بـ Drizzle ORM مع Zod validation
+- الصور بتتحمّل من `artifacts/api-server/assets/` بـ path مطلق
+- لو صورة مش موجودة، البوت يشتغل بدونها عادي
 
 ## User preferences
 
@@ -38,8 +63,5 @@ _Populate as you build — explicit user instructions worth remembering across s
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
-
-## Pointers
-
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+- لازم تشغّل `pnpm --filter @workspace/db run push` بعد أي تغيير في الـ schema
+- الـ `dragon.webp` (thumbnail) مش موجودة — لو عايز تضيفها حطّها في `artifacts/api-server/assets/dragon.webp`
