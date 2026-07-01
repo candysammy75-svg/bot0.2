@@ -22,7 +22,7 @@ import {
   SlashCommandBuilder,
   MessageFlags,
 } from "discord.js";
-import { db, roomsTable, purchasesTable, botUsersTable, warningsTable } from "@workspace/db";
+import { db, roomsTable, purchasesTable, botUsersTable, warningsTable, addonPricesTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
 import { logger } from "./lib/logger";
 import path from "path";
@@ -56,6 +56,37 @@ const BANNED_WORDS = [
 ];
 
 let mentionBypassRoleId: string | null = null;
+
+// ─────────────────────────────────────────────
+//  الإضافات — addon list
+// ─────────────────────────────────────────────
+const PEEPO_EMOJI = { id: "1521896847327756493", name: "Peepo_Helicopter", animated: true };
+
+const ADDONS = [
+  { key: "mention_everyone",          label: "سعر منشن إيفري" },
+  { key: "mention_here",              label: "سعر منشن هير" },
+  { key: "mention_shop",              label: "سعر منشن شوب" },
+  { key: "add_partner",               label: "سعر إضافة شريك" },
+  { key: "partner",                   label: "سعر شريك" },
+  { key: "remove_partner",            label: "سعر إزالة شريك" },
+  { key: "change_store_owner",        label: "سعر تغيير مالك المتجر" },
+  { key: "change_store_name",         label: "سعر تغيير اسم المتجر" },
+  { key: "activate_store",            label: "سعر تفعيل المتجر" },
+  { key: "change_store_emoji",        label: "سعر تغيير إيموجي المتجر" },
+  { key: "change_store_type",         label: "سعر تغيير نوع المتجر" },
+  { key: "store",                     label: "سعر المتجر" },
+  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },
+  { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },
+  { key: "mention_requests",          label: "سعر منشن طلبات" },
+  { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
+  { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },
+  { key: "mention_auction",           label: "سعر منشن مزاد" },
+  { key: "auto_lines",                label: "سعر تلقائي للخطوط" },
+  { key: "auto_publish",              label: "سعر النشر التلقائي" },
+  { key: "remove_store_warning",      label: "سعر إزالة التحذير من المتجر" },
+] as const;
+
+type AddonKey = (typeof ADDONS)[number]["key"];
 
 // ─────────────────────────────────────────────
 //  Discord Client
@@ -439,6 +470,15 @@ client.once(Events.ClientReady, async () => {
       .setDescription("👑 [أونر] احذف نوع روم من المتجر")
       .addIntegerOption((o) => o.setName("id").setDescription("ID الروم").setRequired(true)),
     new SlashCommandBuilder()
+      .setName("setaddonprice")
+      .setDescription("👑 [أونر] حدد سعر إضافة معينة")
+      .addStringOption((o) =>
+        o.setName("addon").setDescription("الإضافة").setRequired(true).addChoices(
+          ...ADDONS.map((a) => ({ name: a.label, value: a.key }))
+        )
+      )
+      .addNumberOption((o) => o.setName("price").setDescription("السعر (كريدت)").setRequired(true)),
+    new SlashCommandBuilder()
       .setName("givebalance")
       .setDescription("👑 [أونر] أضف رصيد منشنات ليوزر")
       .addUserOption((o) => o.setName("user").setDescription("اليوزر").setRequired(true))
@@ -724,7 +764,41 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith("shopcat_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const category = interaction.customId.replace("shopcat_", "");
-    const rooms    = await db.select().from(roomsTable).where(eq(roomsTable.category, category));
+
+    // ── أسعار الإضافات ──
+    if (category === "الإضافات") {
+      const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const embed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+        .setTitle("أسعار الإضافات")
+        .setDescription("أختر زر بالأسفل لمعرفة سعر الإضافة")
+        .setColor(0x00bfff)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+      if (guildIconURL) embed.setThumbnail(guildIconURL);
+
+      const files: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        embed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const addonButtons = ADDONS.map((a) =>
+        new ButtonBuilder()
+          .setCustomId(`addoninfo_${a.key}`)
+          .setLabel(a.label)
+          .setEmoji(PEEPO_EMOJI)
+          .setStyle(ButtonStyle.Secondary)
+      );
+      const components: ActionRowBuilder<ButtonBuilder>[] = [];
+      for (let i = 0; i < addonButtons.length; i += 5)
+        components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...addonButtons.slice(i, i + 5)));
+
+      await interaction.editReply({ embeds: [embed], files, components });
+      return;
+    }
+
+    const rooms = await db.select().from(roomsTable).where(eq(roomsTable.category, category));
 
     if (rooms.length === 0) {
       await interaction.editReply({ content: `📭 مفيش رومات في فئة **${category}** دلوقتي.` });
@@ -755,6 +829,30 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...roomButtons.slice(i, i + 5)));
 
     await interaction.editReply({ embeds: [embed], files, components });
+    return;
+  }
+
+  // ── زرار سعر إضافة ──
+  if (interaction.isButton() && interaction.customId.startsWith("addoninfo_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const key    = interaction.customId.replace("addoninfo_", "") as AddonKey;
+    const addon  = ADDONS.find((a) => a.key === key);
+    if (!addon) { await interaction.editReply({ content: "❌ الإضافة مش موجودة." }); return; }
+
+    const [row] = await db.select().from(addonPricesTable).where(eq(addonPricesTable.key, key));
+    const rawPrice = row ? Number(row.price) : 0;
+    const price = Number.isFinite(rawPrice) ? rawPrice : 0;
+    const priceText = price > 0 ? `${Math.round(price)} كريدت` : "غير محدد";
+
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(addon.label)
+      .setColor(0x00bfff)
+      .addFields({ name: "💰 السعر", value: priceText, inline: false })
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
@@ -1072,6 +1170,31 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       content:
         `✅ تم إضافة **${amount}** منشن ${mentionName} لـ <@${targetUser.id}>\n` +
         `📊 رصيده الحالي: ${newBalance} منشن`,
+    });
+  }
+
+  // /setaddonprice
+  if (interaction.commandName === "setaddonprice") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (!interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." }); return;
+    }
+    const key   = interaction.options.getString("addon", true) as AddonKey;
+    const price = interaction.options.getNumber("price", true);
+    const addon = ADDONS.find((a) => a.key === key)!;
+
+    if (!Number.isFinite(price) || price < 0) {
+      await interaction.editReply({ content: "❌ السعر لازم يكون رقم صحيح موجب." }); return;
+    }
+
+    const roundedPrice = Math.round(price);
+    await db
+      .insert(addonPricesTable)
+      .values({ key, label: addon.label, price: String(roundedPrice) })
+      .onConflictDoUpdate({ target: addonPricesTable.key, set: { label: addon.label, price: String(roundedPrice), updatedAt: new Date() } });
+
+    await interaction.editReply({
+      content: `✅ **تم تحديث السعر!**\n\n📌 الإضافة: **${addon.label}**\n💰 السعر الجديد: **${roundedPrice} كريدت**`,
     });
   }
 

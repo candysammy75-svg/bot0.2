@@ -59,6 +59,17 @@ export const insertBotUserSchema = createInsertSchema(botUsersTable).omit({ id: 
 export type InsertBotUser = z.infer<typeof insertBotUserSchema>;
 export type BotUser = typeof botUsersTable.$inferSelect;
 
+// ─── Addon Prices ─────────────────────────────────────────────────────────────
+export const addonPricesTable = pgTable("addon_prices", {
+  id: serial("id").primaryKey(),
+  key: text("key").notNull().unique(),
+  label: text("label").notNull(),
+  price: text("price").notNull().default("0"),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export type AddonPrice = typeof addonPricesTable.$inferSelect;
+
 // ─── Warnings ─────────────────────────────────────────────────────────────────
 export const warningsTable = pgTable("warnings", {
   id: serial("id").primaryKey(),
