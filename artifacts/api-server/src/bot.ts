@@ -62,28 +62,35 @@ let mentionBypassRoleId: string | null = null;
 // ─────────────────────────────────────────────
 const PEEPO_EMOJI = { id: "1521896847327756493", name: "Peepo_Helicopter", animated: true };
 
+// ترتيب الكود معكوس بسبب RTL rendering في Discord
+// أول عنصر في الكود يظهر على اليمين، وآخر عنصر يظهر على اليسار
 const ADDONS = [
-  { key: "mention_everyone",          label: "سعر منشن إيفري" },
-  { key: "mention_here",              label: "سعر منشن هير" },
-  { key: "mention_shop",              label: "سعر منشن شوب" },
-  { key: "add_partner",               label: "سعر إضافة شريك" },
-  { key: "partner",                   label: "سعر شريك" },
-  { key: "remove_partner",            label: "سعر إزالة شريك" },
-  { key: "change_store_owner",        label: "سعر تغيير مالك المتجر" },
-  { key: "change_store_name",         label: "سعر تغيير اسم المتجر" },
-  { key: "activate_store",            label: "سعر تفعيل المتجر" },
-  { key: "change_store_emoji",        label: "سعر تغيير إيموجي المتجر" },
-  { key: "change_store_type",         label: "سعر تغيير نوع المتجر" },
-  { key: "store",                     label: "سعر المتجر" },
-  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },
-  { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },
-  { key: "mention_requests",          label: "سعر منشن طلبات" },
-  { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
-  { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },
-  { key: "mention_auction",           label: "سعر منشن مزاد" },
-  { key: "auto_lines",                label: "سعر تلقائي للخطوط" },
-  { key: "auto_publish",              label: "سعر النشر التلقائي" },
-  { key: "remove_store_warning",      label: "سعر إزالة التحذير من المتجر" },
+  // Row 1 (يظهر على الشاشة من اليسار لليمين): إزالة شريك | شريك | إضافة شريك | منشن شوب | منشن هير
+  { key: "mention_here",               label: "سعر منشن هير" },           // يمين
+  { key: "mention_shop",               label: "سعر منشن شوب" },
+  { key: "add_partner",                label: "سعر إضافة شريك" },
+  { key: "partner",                    label: "سعر شريك" },
+  { key: "remove_partner",             label: "سعر إزالة شريك" },          // يسار
+  // Row 2: تغيير مالك | تغيير نوع | تغيير إيموجي | تفعيل | تغيير اسم
+  { key: "change_store_name",          label: "سعر تغيير اسم المتجر" },    // يمين
+  { key: "activate_store",             label: "سعر تفعيل المتجر" },
+  { key: "change_store_emoji",         label: "سعر تغيير إيموجي المتجر" },
+  { key: "change_store_type",          label: "سعر تغيير نوع المتجر" },
+  { key: "change_store_owner",         label: "سعر تغيير مالك المتجر" },   // يسار
+  // Row 3: منشن هير مزاد | منشن إيفري مزاد | منشن طلبات | منشن هير طلبات | منشن إيفري طلبات
+  { key: "mention_everyone_requests",  label: "سعر منشن إيفري طلبات" },    // يمين
+  { key: "mention_here_requests",      label: "سعر منشن هير طلبات" },
+  { key: "mention_requests",           label: "سعر منشن طلبات" },
+  { key: "mention_everyone_auction",   label: "سعر منشن إيفري مزاد" },
+  { key: "mention_here_auction",       label: "سعر منشن هير مزاد" },       // يسار
+  // Row 4: منشن مزاد | تلقائي للخطوط | النشر التلقائي | المتجر | منشن إيفري
+  { key: "mention_everyone",           label: "سعر منشن إيفري" },          // يمين
+  { key: "store",                      label: "سعر المتجر" },
+  { key: "auto_publish",               label: "سعر النشر التلقائي" },
+  { key: "auto_lines",                 label: "سعر تلقائي للخطوط" },
+  { key: "mention_auction",            label: "سعر منشن مزاد" },           // يسار
+  // Row 5
+  { key: "remove_store_warning",       label: "سعر إزالة التحذير من المتجر" },
 ] as const;
 
 type AddonKey = (typeof ADDONS)[number]["key"];
