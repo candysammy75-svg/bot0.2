@@ -103,7 +103,7 @@ const BANNED_WORDS = [
  * وبالتالي بيعدوا على قاعدة AutoMod اللي بتبلوك @everyone و @here.
  * NOTE: بيتحط بعد ما AutoMod يتعمل في ClientReady.
  */
-let mentionBypassRoleId: string | null = null;
+// NOTE: رول mention-bypass اتشال — المنشنات بتتفلتر يدوياً في الرومات
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  الإضافات — Addons
@@ -297,35 +297,30 @@ async function addWarning(
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  AutoMod Setup
-//  NOTE: البوت بيعمل قاعدتين في Discord AutoMod:
-//  1. "Bot - Blocked Words" — بيبلوك الكلام الممنوع في BANNED_WORDS
-//  2. "Bot - Mention Balance Block" — بيبلوك @everyone و @here إلا لو عندك رصيد
+//  NOTE: البوت بيعمل قاعدة واحدة بس في Discord AutoMod:
+//  1. "Bot - Blocked Words" — بيبلوك الكلام الممنوع في كل السيرفر
 //
-//  لو القاعدتين موجودين قبل كده، بيعدّلهم (مش بيعمل نسخ تانية).
-//  الـ exemptRoles بيحتوي على رول "mention-bypass" اللي الناس ذات الرصيد بياخدوه.
+//  المنشنات (@everyone / @here) مش بيتحكم فيها AutoMod —
+//  البوت بيفلترها يدوياً بس جوه رومات العملاء (في MessageCreate).
+//  ده عشان خارج الرومات الناس تقدر تمنشن بحرية.
 // ══════════════════════════════════════════════════════════════════════════════
 async function setupAutoMod(guild: Guild): Promise<void> {
   try {
-    // ── رول mention-bypass ────────────────────────────────────────────────
-    // بيتعمل تلقائياً لو مش موجود، بيتحفظ الـ ID في mentionBypassRoleId
-    let bypassRole = guild.roles.cache.find((r) => r.name === "mention-bypass");
-    if (!bypassRole) {
-      bypassRole = await guild.roles.create({
-        name: "mention-bypass",
-        mentionable: false,
-        reason: "Bot auto-created: allows @everyone/@here when balance > 0",
-      });
-      logger.info({ roleId: bypassRole.id }, "Created mention-bypass role");
-    }
-    mentionBypassRoleId = bypassRole.id;
-
     const existingRules = await guild.autoModerationRules.fetch();
 
-    // ── قاعدة الكلام الممنوع ─────────────────────────────────────────────
+    // ── حذف قاعدة المنشنات القديمة لو موجودة ────────────────────────────
+    // NOTE: القاعدة دي كانت بتبلوك @everyone و @here في كل السيرفر —
+    //       اتشالت عشان نخلي المنشنات تشتغل بحرية خارج الرومات.
+    const oldMentionRule = existingRules.find((r) => r.name === "Bot - Mention Balance Block");
+    if (oldMentionRule) {
+      await oldMentionRule.delete("Replaced by per-room manual enforcement");
+      logger.info("Deleted old mention AutoMod rule");
+    }
+
+    // ── قاعدة الكلام الممنوع (سيرفر-wide) ──────────────────────────────
     const bannedWordRuleName = "Bot - Blocked Words";
     const existingBannedRule = existingRules.find((r) => r.name === bannedWordRuleName);
     if (existingBannedRule) {
-      // عدّل القاعدة الموجودة بدل ما تعمل نسخة تانية
       await existingBannedRule.edit({
         triggerMetadata: { keywordFilter: BANNED_WORDS, regexPatterns: [], allowList: [] },
         enabled: true,
@@ -344,58 +339,9 @@ async function setupAutoMod(guild: Guild): Promise<void> {
       });
     }
 
-    // ── قاعدة المنشنات ───────────────────────────────────────────────────
-    // NOTE: AutoMod بيستخدم regex هنا مش keywordFilter،
-    //       لأن @everyone و @here مش كلمات عادية في فلتر AutoMod.
-    //       الـ exemptRoles بيخلي أصحاب رول mention-bypass يعدوا القاعدة.
-    const mentionRuleName = "Bot - Mention Balance Block";
-    const existingMentionRule = existingRules.find((r) => r.name === mentionRuleName);
-    const mentionRuleData = {
-      triggerMetadata: {
-        keywordFilter:  [] as string[],
-        regexPatterns:  ["@everyone", "@here"],
-        allowList:      [] as string[],
-      },
-      actions: [{
-        type: AutoModerationActionType.BlockMessage,
-        metadata: { customMessage: "⛔ رصيد المنشنات خلص أو في كول داون. الرسالة اتبلوكت." },
-      }],
-      exemptRoles: [bypassRole.id],
-      enabled: true,
-    };
-
-    if (existingMentionRule) {
-      await existingMentionRule.edit(mentionRuleData);
-    } else {
-      await guild.autoModerationRules.create({
-        name: mentionRuleName,
-        eventType: AutoModerationRuleEventType.MessageSend,
-        triggerType: AutoModerationRuleTriggerType.Keyword,
-        ...mentionRuleData,
-      });
-    }
-
     logger.info("AutoMod rules configured");
   } catch (err) {
     logger.error({ err }, "Failed to setup AutoMod rules");
-  }
-}
-
-/**
- * بيدي اليوزر رول mention-bypass أو بياخده منه.
- * @param enabled true = دي الرول (عنده رصيد) | false = شيل الرول (خلص رصيده)
- * NOTE: بيفشل بصمت لو اليوزر مش موجود في السيرفر أو البوت معندوش صلاحية.
- */
-async function setMentionBypass(guild: Guild, userId: string, enabled: boolean): Promise<void> {
-  if (!mentionBypassRoleId) return;
-  try {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return;
-    const hasRole = member.roles.cache.has(mentionBypassRoleId);
-    if (enabled && !hasRole)  await member.roles.add(mentionBypassRoleId);
-    else if (!enabled && hasRole) await member.roles.remove(mentionBypassRoleId);
-  } catch (err) {
-    logger.error({ err, userId }, "Failed to update mention-bypass role");
   }
 }
 
@@ -809,27 +755,10 @@ client.once(Events.ClientReady, async () => {
   // ── مزامنة الرومات ────────────────────────────────────────────────────────
   await syncStaticRooms();
 
-  // ── إعداد AutoMod + رولات الرصيد ─────────────────────────────────────────
+  // ── إعداد AutoMod (كلام ممنوع فقط) ──────────────────────────────────────
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) {
     await setupAutoMod(guild);
-
-    // أعد رول mention-bypass لكل من لديه رصيد منشنات في DB
-    // NOTE: ده مهم عشان لو البوت restart الرولات مش بتتمسح —
-    //       بس لو حد اتحذف منه الرول يدوياً البوت مش بيلاحظ إلا بعد restart
-    if (mentionBypassRoleId) {
-      // NOTE: الـ bypass بس لـ @here و @everyone — مش لـ @offers.
-      //       @offers رول mention عادي مش بيتحكم فيه AutoMod.
-      const usersWithBalance = await db
-        .select()
-        .from(botUsersTable)
-        .then((rows) =>
-          rows.filter((u) => u.hereBalance > 0 || u.everyoneBalance > 0)
-        );
-      for (const u of usersWithBalance) {
-        await setMentionBypass(guild, u.discordUserId, true);
-      }
-    }
   }
 });
 
@@ -990,54 +919,67 @@ client.on(Events.MessageCreate, async (message: Message) => {
       return;
     }
 
-    // ── خصم رصيد المنشنات عند الاستخدام الفعلي ───────────────────────────
-    // NOTE: AutoMod بيبلوك @everyone و @here لو مش عنده رصيد.
-    //       البوت هنا بيخصم من الرصيد بعد الاستخدام الناجح.
-    //       لو الرصيد وصل 0 في كل الأنواع: يشيل رول mention-bypass تلقائياً.
+    // ── فلتر المنشنات يدوياً (بس جوه الرومات) ───────────────────────────
+    // NOTE: AutoMod مش بيتحكم في المنشنات — البوت هو اللي بيفلترها هنا.
+    //       خارج الرومات: @everyone و @here مسموح بيهم بحرية.
+    //       جوه الرومات: محتاج رصيد، لو مفيش رصيد → الرسالة بتتحذف + تحذير.
     const usedEveryone = /@everyone/i.test(content);
     const usedHere     = /@here/i.test(content);
     const usedOffers   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
 
     if (usedEveryone || usedHere || usedOffers) {
       const u = await getOrCreateUser(userId, username);
+
+      // ── تحقق من الرصيد قبل السماح ────────────────────────────────────
+      const noEveryoneBal = usedEveryone && u.everyoneBalance <= 0;
+      const noHereBal     = usedHere     && u.hereBalance     <= 0;
+      const noOffersBal   = usedOffers   && u.offersBalance   <= 0;
+
+      if (noEveryoneBal || noHereBal || noOffersBal) {
+        // رصيد ناقص → احذف الرسالة وأبلغ اليوزر
+        await message.delete().catch(() => {});
+        const missing: string[] = [];
+        if (noEveryoneBal) missing.push("@everyone");
+        if (noHereBal)     missing.push("@here");
+        if (noOffersBal)   missing.push("@offers");
+        try {
+          await message.author.send(
+            `⛔ رسالتك اتحذفت — رصيد **${missing.join(" / ")}** خلص.\n` +
+            `📊 رصيدك الحالي:\n` +
+            `  📢 @everyone: ${u.everyoneBalance}\n` +
+            `  📣 @here: ${u.hereBalance}\n` +
+            `  🔔 @offers: ${u.offersBalance}`
+          );
+        } catch {}
+        return;
+      }
+
+      // ── رصيد كافي → اخصم ─────────────────────────────────────────────
       const updates: Partial<{
         everyoneBalance: number;
         hereBalance:     number;
         offersBalance:   number;
       }> = {};
 
-      if (usedEveryone && u.everyoneBalance > 0)
-        updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
-      if (usedHere && u.hereBalance > 0)
-        updates.hereBalance = Math.max(0, u.hereBalance - 1);
-      if (usedOffers && u.offersBalance > 0)
-        updates.offersBalance = Math.max(0, u.offersBalance - 1);
+      if (usedEveryone) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
+      if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance - 1);
+      if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance - 1);
 
-      if (Object.keys(updates).length > 0) {
-        await db
-          .update(botUsersTable)
-          .set(updates)
-          .where(eq(botUsersTable.discordUserId, userId));
+      await db
+        .update(botUsersTable)
+        .set(updates)
+        .where(eq(botUsersTable.discordUserId, userId));
 
-        // اجيب البيانات المحدثة عشان أعرف الرصيد الجديد الدقيق
-        const uUpdated    = await getOrCreateUser(userId, username);
-        const newOffers   = updates.offersBalance   ?? uUpdated.offersBalance;
-        const newHere     = updates.hereBalance     ?? uUpdated.hereBalance;
-        const newEveryone = updates.everyoneBalance ?? uUpdated.everyoneBalance;
+      // أبلغ اليوزر بالرصيد المتبقي
+      const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
+      const newHere     = updates.hereBalance     ?? u.hereBalance;
+      const newOffers   = updates.offersBalance   ?? u.offersBalance;
 
-        // لو رصيد @here و @everyone بقى 0 → شيل رول mention-bypass
-        // NOTE: @offers مش بيأثر على mention-bypass لأن AutoMod مش بيبلوكه
-        if (newHere === 0 && newEveryone === 0) {
-          await setMentionBypass(message.guild, userId, false);
-        }
-
-        // أبلغ اليوزر بالرصيد المتبقي عبر DM
-        const lines: string[] = [];
-        if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
-        if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
-        if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
-        try { await message.author.send(lines.join("\n")); } catch {}
-      }
+      const lines: string[] = [];
+      if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
+      if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
+      if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
+      try { await message.author.send(lines.join("\n")); } catch {}
     }
   }
 
@@ -1124,13 +1066,6 @@ client.on(Events.MessageCreate, async (message: Message) => {
           .update(botUsersTable)
           .set({ everyoneBalance: u.everyoneBalance + room.everyoneCount })
           .where(eq(botUsersTable.discordUserId, userId));
-
-      // أضف mention-bypass لو عنده رصيد @here أو @everyone
-      // NOTE: @offers مش بيحتاج bypass لأن AutoMod مش بيبلوك role mentions
-      const uUpdated = await getOrCreateUser(userId, username);
-      if (uUpdated.hereBalance > 0 || uUpdated.everyoneBalance > 0) {
-        await setMentionBypass(message.guild, userId, true);
-      }
 
       // رسالة التهنئة
       const bannerFiles: AttachmentBuilder[] = [];
@@ -1702,12 +1637,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .update(botUsersTable)
       .set({ [balKey]: newBalance })
       .where(eq(botUsersTable.discordUserId, targetUser.id));
-
-    // دي رول mention-bypass بس لو النوع here أو everyone وعنده رصيد
-    // NOTE: @offers مش بيحتاج bypass — AutoMod مش بيبلوك role mentions
-    const needsBypass =
-      (mentionType === "here" || mentionType === "everyone") && newBalance > 0;
-    if (needsBypass) await setMentionBypass(interaction.guild!, targetUser.id, true);
 
     const mentionName =
       mentionType === "offers"   ? "@offers" :
