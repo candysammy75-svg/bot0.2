@@ -60,9 +60,14 @@ import { fileURLToPath } from "url";
 //  NOTE: كل المتغيرات دي لازم تكون موجودة في Replit Secrets.
 //        لو أي واحد منهم مش موجود، البوت مش هيشتغل صح.
 // ══════════════════════════════════════════════════════════════════════════════
-const TOKEN    = process.env.DISCORD_TOKEN!; // توكن البوت من Discord Developer Portal
-const OWNER_ID = process.env.OWNER_ID!;      // Discord User ID بتاع الأونر (اللي بيتحول له الكريدت)
-const GUILD_ID = process.env.GUILD_ID!;      // Discord Server ID بتاع السيرفر
+const TOKEN    = process.env.DISCORD_TOKEN ?? "";
+const OWNER_ID = process.env.OWNER_ID ?? "";
+const GUILD_ID = process.env.GUILD_ID ?? "";
+
+// تحقق من وجود المتغيرات المطلوبة قبل تشغيل البوت
+if (!TOKEN)    throw new Error("DISCORD_TOKEN is required but not set");
+if (!OWNER_ID) throw new Error("OWNER_ID is required but not set");
+if (!GUILD_ID) throw new Error("GUILD_ID is required but not set");
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ProBot — إعدادات التحويل
@@ -766,6 +771,7 @@ client.once(Events.ClientReady, async () => {
 //  MessageCreate — معالجة الرسائل
 // ══════════════════════════════════════════════════════════════════════════════
 client.on(Events.MessageCreate, async (message: Message) => {
+  try {
 
   // ── رسائل البوتات (ProBot فقط) ──────────────────────────────────────────
   if (message.author.bot) {
@@ -1090,12 +1096,16 @@ client.on(Events.MessageCreate, async (message: Message) => {
     }
     return;
   }
+  } catch (err) {
+    logger.error({ err, messageId: message.id }, "Unhandled error in MessageCreate");
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  InteractionCreate — معالجة التفاعلات (أزرار + Slash Commands)
 // ══════════════════════════════════════════════════════════════════════════════
 client.on(Events.InteractionCreate, async (interaction: Interaction) => {
+  try {
 
   // ══════════════════════════════════════════════════════════════════════════
   //  BUTTONS
@@ -1744,18 +1754,26 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       content: `✅ تم إرسال طلب تحويل الملكية. رسوم التحويل: ${Math.round(transferFee)}`,
     });
   }
+  } catch (err) {
+    logger.error({ err, interactionId: interaction.id }, "Unhandled error in InteractionCreate");
+    // حاول تبلّغ المستخدم لو الـ interaction لسه ما اتردّش
+    try {
+      if (interaction.isRepliable()) {
+        const replyMethod = interaction.deferred || interaction.replied
+          ? interaction.editReply.bind(interaction)
+          : interaction.reply.bind(interaction);
+        await replyMethod({ content: "❌ حصل خطأ غير متوقع. حاول تاني أو تواصل مع الأدمن." });
+      }
+    } catch { /* تجاهل أخطاء الـ fallback reply */ }
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  startBot — نقطة الدخول
 //  NOTE: بيتنادى من index.ts عند بدء الـ server.
-//        لو DISCORD_TOKEN مش موجود، البوت مش هيشتغل ولكن الـ server هيفضل شغال.
+//        المتغيرات المطلوبة بتتتحقق منها عند import البوت — لو مش موجودة بيرمي error.
 // ══════════════════════════════════════════════════════════════════════════════
 export function startBot(): void {
-  if (!TOKEN) {
-    logger.error("DISCORD_TOKEN is not set, bot will not start");
-    return;
-  }
   client.login(TOKEN).catch((err) => {
     logger.error({ err }, "Failed to login to Discord");
   });
