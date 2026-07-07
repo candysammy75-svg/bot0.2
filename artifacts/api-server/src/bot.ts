@@ -569,6 +569,9 @@ const AUCTION_ROOM_CHANNEL_IDS: readonly string[] = [
 /** ID كاتيجوري المزادات والطلبيات */
 const AUCTION_CATEGORY_ID = "1523801337933074688";
 
+/** ID الشانل اللي بيتبعت فيه إمبيد الأسعار والجدول */
+const AUCTION_INFO_CHANNEL_ID = "1523801349655888076";
+
 /** أنواع المزاد وأسعارها (سعر صافي بدون عمولة ProBot) */
 const AUCTION_TYPES = {
   everyone: { label: "@everyone", emoji: "📢", price: 10_000_000 },
@@ -1441,49 +1444,79 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
-    // ── فئة المزاد (معالجة خاصة — نظام حجز منفصل) ───────────────────────
+    // ── فئة المزاد (معالجة خاصة — يبعت الإمبيد في شانل المزاد) ──────────
     if (category === "المزاد") {
-      const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-      const embed = new EmbedBuilder()
+      const guild       = interaction.guild!;
+      const infoCh      = guild.channels.cache.get(AUCTION_INFO_CHANNEL_ID) as TextChannel | undefined;
+      const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+      // ── الإمبيد المزخرف (يتبعت في شانل المزاد علناً) ─────────────────
+      const auctionEmbed = new EmbedBuilder()
         .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-        .setTitle("🎰 نظام المزاد")
-        .setDescription(
-          `**كيف يعمل المزاد؟**\n\n` +
-          `1️⃣ اختر نوع المزاد اللي عايزه\n` +
-          `2️⃣ اختر الموعد المناسب ليك\n` +
-          `3️⃣ ادفع عبر ProBot ويتأكد حجزك\n` +
-          `4️⃣ في الموعد، البوت يفتح روم المزاد تلقائياً\n` +
-          `5️⃣ الناس تتزايد — من يكتب أعلى مبلغ يفوز!\n` +
-          `⏱️ المزاد ينتهي بعد **دقيقتين** من آخر عرض\n\n` +
-          `━━━━━━━━━━━━━━━━━━━━\n` +
-          `**الأسعار (بتوقيت القاهرة):**\n` +
-          `📢 @everyone — **10,000,000** كريدت\n` +
-          `📣 @here — **5,000,000** كريدت\n` +
-          `🔔 @offers — **3,000,000** كريدت\n` +
-          `━━━━━━━━━━━━━━━━━━━━`,
-        )
+        .setTitle("🏷️ الـ آسعار الـ مـزادات")
         .setColor(0xffd700)
+        .addFields(
+          // everyone
+          {
+            name:   "ـﮩ══════════════ﮩـ",
+            value:
+              `🌟 **منشن :**\n` +
+              `• 🚀 @everyone\n\n` +
+              `💰 **السعر :**\n` +
+              `• <:probot:1462092856876470455> 10,000,000\n` +
+              `ـﮩ══════════════ﮩـ`,
+            inline: false,
+          },
+          // here
+          {
+            name:   "\u200b",
+            value:
+              `🌟 **منشن :**\n` +
+              `• 🚀 @here\n\n` +
+              `💰 **السعر :**\n` +
+              `• <:probot:1462092856876470455> 5,000,000\n` +
+              `ـﮩ══════════════ﮩـ`,
+            inline: false,
+          },
+          // offers
+          {
+            name:   "\u200b",
+            value:
+              `🌟 **منشن :**\n` +
+              `• 🚀 @offers\n\n` +
+              `💰 **السعر :**\n` +
+              `• <:probot:1462092856876470455> 3,000,000\n` +
+              `ـﮩ══════════════ﮩـ`,
+            inline: false,
+          },
+        )
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
-      if (guildIconURL) embed.setThumbnail(guildIconURL);
+      if (guildIconURL) auctionEmbed.setThumbnail(guildIconURL);
 
-      const files: AttachmentBuilder[] = [];
+      const auctionFiles: AttachmentBuilder[] = [];
       if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-        files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
-        embed.setImage("attachment://dragon_text_banner.webp");
+        auctionFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const typeButtons = [
-        new ButtonBuilder().setCustomId("auctype_everyone").setLabel("📢 @everyone — 10,000,000").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("auctype_here").setLabel("📣 @here — 5,000,000").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("auctype_offers").setLabel("🔔 @offers — 3,000,000").setStyle(ButtonStyle.Primary),
-      ];
+      // أزرار الشراء (لكل نوع زرار منفصل) + زرار المواعيد المحجوزة
+      const buyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("auctype_everyone").setLabel("@everyone").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("auctype_here").setLabel("@here").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("auctype_offers").setLabel("@offers").setStyle(ButtonStyle.Primary),
+      );
+      const schedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("auction_schedule_view").setLabel("📅 المواعيد المحجوزة").setStyle(ButtonStyle.Secondary),
+      );
 
-      await interaction.editReply({
-        embeds:     [embed],
-        files,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(...typeButtons)],
-      });
+      if (infoCh) {
+        await infoCh.send({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
+        await interaction.editReply({ content: `✅ تم إرسال أسعار المزاد في <#${AUCTION_INFO_CHANNEL_ID}>` });
+      } else {
+        // لو الشانل مش متاح: ابعت للمستخدم مباشرة
+        await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
+      }
       return;
     }
 
@@ -1739,6 +1772,66 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     });
 
     await interaction.editReply({ content: `✅ تم إنشاء تذكرة الحجز! <#${ticketChannel.id}>` });
+    return;
+  }
+
+  // ── زرار المواعيد المحجوزة (auction_schedule_view) ──────────────────────
+  if (interaction.isButton() && interaction.customId === "auction_schedule_view") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const { date } = getCairoTime();
+
+    const schedules = await db
+      .select()
+      .from(auctionSchedulesTable)
+      .where(
+        and(
+          eq(auctionSchedulesTable.scheduledDate, date),
+          ne(auctionSchedulesTable.status, "cancelled"),
+        ),
+      );
+
+    if (schedules.length === 0) {
+      await interaction.editReply({ content: `📭 **مفيش مواعيد محجوزة اليوم** (${date})` });
+      return;
+    }
+
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`📅 المواعيد المحجوزة — ${date}`)
+      .setColor(0x5865f2)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    if (guildIconURL) embed.setThumbnail(guildIconURL);
+
+    const statusEmoji: Record<string, string> = {
+      pending_payment: "⏳",
+      scheduled:       "✅",
+      active:          "🔴",
+      completed:       "✔️",
+    };
+
+    const typeEmoji: Record<string, string> = {
+      everyone: "📢",
+      here:     "📣",
+      offers:   "🔔",
+    };
+
+    // رتّب حسب الساعة
+    schedules.sort((a, b) => a.scheduledHour - b.scheduledHour);
+
+    const lines = schedules.map((s) => {
+      const st   = statusEmoji[s.status] ?? "❓";
+      const te   = typeEmoji[s.auctionType] ?? "";
+      const time = `${hourToLabel(s.scheduledHour)}:00`;
+      const type = AUCTION_TYPES[s.auctionType as AuctionType]?.label ?? s.auctionType;
+      return `${st} **${time}** — ${te} ${type} — <@${s.discordUserId}>`;
+    });
+
+    embed.setDescription(lines.join("\n"));
+
+    await interaction.editReply({ embeds: [embed] });
     return;
   }
 
