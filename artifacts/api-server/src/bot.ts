@@ -1483,7 +1483,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
             name:   "\u200b",
             value:
               `🌟 **منشن :**\n` +
-              `• 🚀 @offers\n\n` +
+              `• 🚀 <@&${OFFERS_ROLE_ID}>\n\n` +
               `💰 **السعر :**\n` +
               `• <:probot:1462092856876470455> 3,000,000\n` +
               `ـﮩ══════════════ﮩـ`,
@@ -2272,8 +2272,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .where(eq(botUsersTable.discordUserId, targetUser.id));
 
     const mentionName =
-      mentionType === "offers"   ? "@offers" :
-      mentionType === "here"     ? "@here"   : "@everyone";
+      mentionType === "offers"   ? `<@&${OFFERS_ROLE_ID}>` :
+      mentionType === "here"     ? "@here"                 : "@everyone";
 
     await interaction.editReply({
       content:
