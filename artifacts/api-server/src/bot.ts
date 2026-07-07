@@ -580,6 +580,14 @@ const AUCTION_TYPES = {
 } as const;
 type AuctionType = keyof typeof AUCTION_TYPES;
 
+/**
+ * IDs رسائل شانل المزاد الثابتة (تتعبى من الشانل عند كل restart).
+ * - auctionInfoMsgId    → رسالة الشرح (ما تتبعتش تاني أبداً)
+ * - auctionScheduleMsgId → رسالة المواعيد المحجوزة (تتعدّل تلقائياً)
+ */
+let auctionInfoMsgId:     string | null = null;
+let auctionScheduleMsgId: string | null = null;
+
 /** حالة المزادات الجارية (في الذاكرة — تُصفَّر عند restart البوت) */
 const activeAuctions = new Map<string, {
   scheduleId:        number;
@@ -764,6 +772,85 @@ function startAuctionScheduler(guild: Guild): void {
       logger.error({ err }, "Auction scheduler error");
     }
   }, 30_000);
+}
+
+/**
+ * بيبني إمبيد المواعيد المحجوزة لليوم الحالي.
+ * بيتنادى من refreshAuctionScheduleMsg.
+ */
+async function buildScheduleEmbed(): Promise<EmbedBuilder> {
+  const { date } = getCairoTime();
+
+  const schedules = await db
+    .select()
+    .from(auctionSchedulesTable)
+    .where(
+      and(
+        eq(auctionSchedulesTable.scheduledDate, date),
+        ne(auctionSchedulesTable.status, "cancelled"),
+      ),
+    );
+
+  const statusEmoji: Record<string, string> = {
+    pending_payment: "⏳",
+    scheduled:       "✅",
+    active:          "🔴",
+    completed:       "✔️",
+  };
+  const typeEmoji: Record<string, string> = {
+    everyone: "📢",
+    here:     "📣",
+    offers:   "🔔",
+  };
+
+  schedules.sort((a, b) => a.scheduledHour - b.scheduledHour);
+
+  const embed = new EmbedBuilder()
+    .setTitle(`📅 المواعيد المحجوزة — ${date} (توقيت القاهرة)`)
+    .setColor(0x5865f2)
+    .setFooter({ text: `آخر تحديث: ${new Date().toLocaleTimeString("ar-EG", { timeZone: "Africa/Cairo" })}` });
+
+  if (schedules.length === 0) {
+    embed.setDescription("📭 لا توجد مواعيد محجوزة اليوم.");
+  } else {
+    const lines = schedules.map((s) => {
+      const st   = statusEmoji[s.status] ?? "❓";
+      const te   = typeEmoji[s.auctionType] ?? "";
+      const type = AUCTION_TYPES[s.auctionType as AuctionType]?.label ?? s.auctionType;
+      return `${st} **${hourToLabel(s.scheduledHour)}** — ${te} ${type} — <@${s.discordUserId}>`;
+    });
+    embed.setDescription(lines.join("\n"));
+  }
+  return embed;
+}
+
+/**
+ * يحدّث رسالة المواعيد المحجوزة في شانل المزاد.
+ * - لو الرسالة موجودة: يعدّلها.
+ * - لو مش موجودة: يبعتها جديدة ويحفظ الـ ID.
+ */
+async function refreshAuctionScheduleMsg(guild: Guild): Promise<void> {
+  try {
+    const infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID).catch(() => null) as TextChannel | null;
+    if (!infoCh) return;
+
+    const embed = await buildScheduleEmbed();
+
+    if (auctionScheduleMsgId) {
+      const existing = await infoCh.messages.fetch(auctionScheduleMsgId).catch(() => null);
+      if (existing) {
+        await existing.edit({ embeds: [embed] });
+        return;
+      }
+      // الرسالة اتحذفت — هنبعت جديدة
+      auctionScheduleMsgId = null;
+    }
+
+    const sent = await infoCh.send({ embeds: [embed] });
+    auctionScheduleMsgId = sent.id;
+  } catch (err) {
+    logger.error({ err }, "refreshAuctionScheduleMsg error");
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -980,13 +1067,39 @@ client.once(Events.ClientReady, async () => {
     await setupAutoMod(guild);
 
     // ── تهيئة رومات المزاد (قفلها عند بدء التشغيل) ───────────────────────
-    // NOTE: بنقفل الـ 3 رومات عند كل restart عشان نضمن إنها مقفولة.
-    //       المزادات المجدولة هتشتغل تلقائياً عبر الـ scheduler.
     for (const roomId of AUCTION_ROOM_CHANNEL_IDS) {
       await lockAuctionRoom(guild, roomId);
     }
+
+    // ── استعادة IDs رسائل شانل المزاد بعد الـ restart ────────────────────
+    try {
+      const infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID).catch(() => null) as TextChannel | null;
+      if (infoCh) {
+        const recent = await infoCh.messages.fetch({ limit: 50 }).catch(() => null);
+        if (recent) {
+          for (const m of recent.values()) {
+            if (m.author.id !== client.user!.id) continue;
+            if (!auctionInfoMsgId && m.embeds.some((e) => e.title?.includes("كيف يعمل"))) {
+              auctionInfoMsgId = m.id;
+            }
+            if (!auctionScheduleMsgId && m.embeds.some((e) => e.title?.includes("المواعيد المحجوزة"))) {
+              auctionScheduleMsgId = m.id;
+            }
+            if (auctionInfoMsgId && auctionScheduleMsgId) break;
+          }
+        }
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to restore auction info message IDs");
+    }
+
     startAuctionScheduler(guild);
-    logger.info("Auction rooms locked and scheduler started");
+
+    // تحديث المواعيد فور التشغيل ثم كل 5 دقايق
+    await refreshAuctionScheduleMsg(guild);
+    setInterval(() => refreshAuctionScheduleMsg(guild).catch(() => {}), 5 * 60 * 1000);
+
+    logger.info({ auctionInfoMsgId, auctionScheduleMsgId }, "Auction rooms locked and scheduler started");
   }
 });
 
@@ -1072,6 +1185,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
           );
           // أغلق التذكرة بعد 5 ثواني
           setTimeout(() => channel.delete("Auction ticket closed after payment").catch(() => {}), 5000);
+          // حدّث رسالة المواعيد فور تأكيد الحجز
+          if (message.guild) refreshAuctionScheduleMsg(message.guild).catch(() => {});
         } else {
           await channel.send(
             `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${requiredAmt} مع عمولة ProBot 5%). يرجى إعادة التحويل.`,
@@ -1511,22 +1626,12 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       // الأسعار + أزرار الشراء → نفس الشانل اللي ضغط فيه (رد عادي مش ephemeral)
       await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow] });
 
-      // ── شانل المزاد: شرح + المواعيد المحجوزة — مرة واحدة فقط ──────────
-      // NOTE: هنجيب الشانل بـ fetch مش cache عشان نضمن الوصول.
-      //       لو البوت بعت شرح قبل كده (آخر 20 رسالة) مش هنبعت تاني.
-      let infoCh: TextChannel | null = null;
-      try {
-        infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID) as TextChannel;
-      } catch { /* الشانل مش موجود */ }
-
-      if (infoCh) {
-        const recent = await infoCh.messages.fetch({ limit: 20 }).catch(() => null);
-        const alreadySent = recent?.some(
-          (m) => m.author.id === client.user!.id && m.embeds.some((e) => e.title?.includes("كيف يعمل")),
-        ) ?? false;
-
-        if (!alreadySent) {
-          // إمبيد الشرح
+      // ── شانل المزاد: شرح — مرة واحدة فقط للأبد ─────────────────────────
+      // NOTE: auctionInfoMsgId بيتعبى من الشانل عند كل restart.
+      //       لو موجود → ما نبعتش تاني. المواعيد تتحدث تلقائياً في رسالة منفصلة.
+      if (!auctionInfoMsgId) {
+        const infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID).catch(() => null) as TextChannel | null;
+        if (infoCh) {
           const howEmbed = new EmbedBuilder()
             .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
             .setTitle("🎰 كيف يعمل المزاد؟")
@@ -1543,10 +1648,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
           if (guildIconURL) howEmbed.setThumbnail(guildIconURL);
 
-          const schedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-            new ButtonBuilder().setCustomId("auction_schedule_view").setLabel("📅 المواعيد المحجوزة").setStyle(ButtonStyle.Secondary),
-          );
-          await infoCh.send({ embeds: [howEmbed], components: [schedRow] });
+          const sent = await infoCh.send({ embeds: [howEmbed] });
+          auctionInfoMsgId = sent.id;
+
+          // بعت رسالة المواعيد مباشرة بعد الشرح
+          await refreshAuctionScheduleMsg(guild);
         }
       }
       return;
