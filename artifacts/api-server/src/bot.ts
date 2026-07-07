@@ -1446,46 +1446,47 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     // ── فئة المزاد (معالجة خاصة — يبعت الإمبيد في شانل المزاد) ──────────
     if (category === "المزاد") {
-      const guild       = interaction.guild!;
-      const infoCh      = guild.channels.cache.get(AUCTION_INFO_CHANNEL_ID) as TextChannel | undefined;
+      const guild        = interaction.guild!;
       const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
-      // ── الإمبيد المزخرف (يتبعت في شانل المزاد علناً) ─────────────────
+      // الإيموجيز المخصصة
+      const STAR_EMOJI   = "<a:1111426691680714782:1484902226169430220>";
+      const ZOOM_EMOJI   = "<a:aPES_Zoom:1496140715988619274>";
+      const PROBOT_EMOJI_AUC = "<a:by_ez_84:1495757810569449603>";
+
+      // ── الإمبيد المزخرف ─────────────────────────────────────────────────
       const auctionEmbed = new EmbedBuilder()
         .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
         .setTitle("🏷️ الـ آسعار الـ مـزادات")
         .setColor(0xffd700)
         .addFields(
-          // everyone
           {
             name:   "ـﮩ══════════════ﮩـ",
             value:
-              `🌟 **منشن :**\n` +
-              `• 🚀 @everyone\n\n` +
+              `${STAR_EMOJI} **منشن :**\n` +
+              `• ${ZOOM_EMOJI} @everyone\n\n` +
               `💰 **السعر :**\n` +
-              `• <:probot:1462092856876470455> 10,000,000\n` +
+              `• ${PROBOT_EMOJI_AUC} 10,000,000\n` +
               `ـﮩ══════════════ﮩـ`,
             inline: false,
           },
-          // here
           {
             name:   "\u200b",
             value:
-              `🌟 **منشن :**\n` +
-              `• 🚀 @here\n\n` +
+              `${STAR_EMOJI} **منشن :**\n` +
+              `• ${ZOOM_EMOJI} @here\n\n` +
               `💰 **السعر :**\n` +
-              `• <:probot:1462092856876470455> 5,000,000\n` +
+              `• ${PROBOT_EMOJI_AUC} 5,000,000\n` +
               `ـﮩ══════════════ﮩـ`,
             inline: false,
           },
-          // offers
           {
             name:   "\u200b",
             value:
-              `🌟 **منشن :**\n` +
-              `• 🚀 <@&${OFFERS_ROLE_ID}>\n\n` +
+              `${STAR_EMOJI} **منشن :**\n` +
+              `• ${ZOOM_EMOJI} <@&${OFFERS_ROLE_ID}>\n\n` +
               `💰 **السعر :**\n` +
-              `• <:probot:1462092856876470455> 3,000,000\n` +
+              `• ${PROBOT_EMOJI_AUC} 3,000,000\n` +
               `ـﮩ══════════════ﮩـ`,
             inline: false,
           },
@@ -1500,7 +1501,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      // أزرار الشراء (لكل نوع زرار منفصل) + زرار المواعيد المحجوزة
       const buyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId("auctype_everyone").setLabel("@everyone").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("auctype_here").setLabel("@here").setStyle(ButtonStyle.Primary),
@@ -1510,11 +1510,29 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         new ButtonBuilder().setCustomId("auction_schedule_view").setLabel("📅 المواعيد المحجوزة").setStyle(ButtonStyle.Secondary),
       );
 
+      // ── ابعت في شانل المزاد — مرة واحدة فقط ──────────────────────────
+      // NOTE: بنجيب الشانل بـ fetch (مش cache) عشان نضمن إنه موجود.
+      //       بنفحص آخر رسائل البوت في الشانل — لو في رسالة حديثة (آخر 100)
+      //       من البوت تحتوي على الإمبيد ده، ما نبعتوش تاني.
+      let infoCh: TextChannel | null = null;
+      try {
+        infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID) as TextChannel;
+      } catch { /* الشانل مش موجود أو مش محمّل */ }
+
       if (infoCh) {
-        await infoCh.send({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
-        await interaction.editReply({ content: `✅ تم إرسال أسعار المزاد في <#${AUCTION_INFO_CHANNEL_ID}>` });
+        // فحص هل البوت بعت الإمبيد قبل كده في نفس الشانل
+        const recent = await infoCh.messages.fetch({ limit: 20 }).catch(() => null);
+        const alreadySent = recent?.some(
+          (m) => m.author.id === client.user!.id && m.embeds.some((e) => e.title?.includes("مـزادات")),
+        ) ?? false;
+
+        if (alreadySent) {
+          await interaction.editReply({ content: `📌 أسعار المزاد موجودة بالفعل في <#${AUCTION_INFO_CHANNEL_ID}>` });
+        } else {
+          await infoCh.send({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
+          await interaction.editReply({ content: `✅ تم إرسال أسعار المزاد في <#${AUCTION_INFO_CHANNEL_ID}>` });
+        }
       } else {
-        // لو الشانل مش متاح: ابعت للمستخدم مباشرة
         await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
       }
       return;
