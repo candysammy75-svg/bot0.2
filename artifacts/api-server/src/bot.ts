@@ -62,7 +62,7 @@ import { fileURLToPath } from "url";
 //        لو أي واحد منهم مش موجود، البوت مش هيشتغل صح.
 // ══════════════════════════════════════════════════════════════════════════════
 const TOKEN    = process.env.DISCORD_TOKEN ?? "";
-const OWNER_ID = process.env.OWNER_ID ?? "";
+const OWNER_ID = "1065628450997682186"; // مؤقت — override للـ env
 const GUILD_ID = process.env.GUILD_ID ?? "";
 
 // تحقق من وجود المتغيرات المطلوبة قبل تشغيل البوت
@@ -497,7 +497,7 @@ const STATIC_ROOMS: Record<string, StaticRoom[]> = {
   "المتاجر": [
     {
       name: "bronze",    price: 2000000,  decorations: "🧱",
-      offersCount: 10, hereCount: 7,  everyoneCount: 5,
+      offersCount: 0,  hereCount: 0,  everyoneCount: 0,
       discordCategoryId: "1521225661145026560",
     },
     {
