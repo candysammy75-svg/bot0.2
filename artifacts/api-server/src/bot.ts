@@ -495,37 +495,37 @@ interface StaticRoom {
 const STATIC_ROOMS: Record<string, StaticRoom[]> = {
   "المتاجر": [
     {
-      name: "bronze",    price: 500,  decorations: "🧱",
+      name: "bronze",    price: 2000000,  decorations: "🧱",
       offersCount: 10, hereCount: 7,  everyoneCount: 5,
       discordCategoryId: "1521225661145026560",
     },
     {
-      name: "sliver",    price: 0,    decorations: "🪽",
+      name: "sliver",    price: 5000000,  decorations: "🪽",
       offersCount: 13, hereCount: 10, everyoneCount: 7,
       discordCategoryId: "1521225659362312232",
     },
     {
-      name: "gold",      price: 0,    decorations: "👑",
+      name: "gold",      price: 10000000, decorations: "👑",
       offersCount: 15, hereCount: 13, everyoneCount: 10,
       discordCategoryId: "1521225658410336427",
     },
     {
-      name: "platinum",  price: 0,    decorations: "☄️",
+      name: "platinum",  price: 25000000, decorations: "☄️",
       offersCount: 19, hereCount: 15, everyoneCount: 13,
       discordCategoryId: "1521225657546182867",
     },
     {
-      name: "diamond",   price: 0,    decorations: "💎",
+      name: "diamond",   price: 30000000, decorations: "💎",
       offersCount: 23, hereCount: 19, everyoneCount: 15,
       discordCategoryId: "1521225656099143851",
     },
     {
-      name: "emerald",   price: 0,    decorations: "🐉",
+      name: "emerald",   price: 40000000, decorations: "🐉",
       offersCount: 29, hereCount: 25, everyoneCount: 20,
       discordCategoryId: "1521225655562272869",
     },
     {
-      name: "nightmare", price: 0,    decorations: "🐦‍🔥",
+      name: "nightmare", price: 50000000, decorations: "🐦‍🔥",
       offersCount: 35, hereCount: 30, everyoneCount: 30,
       discordCategoryId: "1521225654807433277",
     },
