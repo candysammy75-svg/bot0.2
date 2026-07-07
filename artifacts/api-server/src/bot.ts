@@ -62,7 +62,7 @@ import { fileURLToPath } from "url";
 //        لو أي واحد منهم مش موجود، البوت مش هيشتغل صح.
 // ══════════════════════════════════════════════════════════════════════════════
 const TOKEN    = process.env.DISCORD_TOKEN ?? "";
-const OWNER_ID = "1065628450997682186"; // مؤقت — override للـ env
+const OWNER_ID = process.env.OWNER_ID ?? "";
 const GUILD_ID = process.env.GUILD_ID ?? "";
 
 // تحقق من وجود المتغيرات المطلوبة قبل تشغيل البوت
@@ -497,7 +497,7 @@ const STATIC_ROOMS: Record<string, StaticRoom[]> = {
   "المتاجر": [
     {
       name: "bronze",    price: 2000000,  decorations: "🧱",
-      offersCount: 0,  hereCount: 0,  everyoneCount: 0,
+      offersCount: 10, hereCount: 7,  everyoneCount: 5,
       discordCategoryId: "1521225661145026560",
     },
     {
@@ -1168,8 +1168,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
         if (!auctionTicket) return;
 
-        const requiredAmt = Number(auctionTicket.totalPrice);
-        if (paid >= requiredAmt) {
+        // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
+        // ProBot بيبلغ عن المبلغ الـ net اللي وصل للمستلم.
+        // نحوّل totalPrice لـ net قبل المقارنة: net = gross * (1 - fee)
+        const requiredAmt    = Number(auctionTicket.totalPrice);
+        const netRequiredAmt = Math.floor(requiredAmt * (1 - PROBOT_FEE));
+        if (paid >= netRequiredAmt) {
           await db.update(auctionSchedulesTable)
             .set({ status: "scheduled" })
             .where(eq(auctionSchedulesTable.id, auctionTicket.id));
@@ -1189,16 +1193,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
           if (message.guild) refreshAuctionScheduleMsg(message.guild).catch(() => {});
         } else {
           await channel.send(
-            `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${requiredAmt} مع عمولة ProBot 5%). يرجى إعادة التحويل.`,
+            `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmt}). يرجى إعادة التحويل.`,
           );
         }
         return;
       }
 
-      // قارن المبلغ المدفوع بالمطلوب (اللي اتحسب مع عمولة ProBot وقت إنشاء التذكرة)
-      const requiredAmount = Number(ticketPurchase.totalPrice);
+      // totalPrice في الـ DB هو gross transfer amount.
+      // ProBot بيبلغ عن الـ net المستلم — نحوّله قبل المقارنة.
+      const requiredAmount    = Number(ticketPurchase.totalPrice);
+      const netRequiredAmount = Math.floor(requiredAmount * (1 - PROBOT_FEE));
 
-      if (paid >= requiredAmount) {
+      if (paid >= netRequiredAmount) {
         // ✅ الدفع صح — انتظر اسم الروم
         await db
           .update(purchasesTable)
