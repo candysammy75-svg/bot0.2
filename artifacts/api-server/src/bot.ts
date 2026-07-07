@@ -1501,39 +1501,53 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
+      // ── أزرار الشراء (تنزل في نفس الشانل اللي ضغط فيه اليوزر) ──────────
       const buyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId("auctype_everyone").setLabel("@everyone").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("auctype_here").setLabel("@here").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("auctype_offers").setLabel("@offers").setStyle(ButtonStyle.Primary),
       );
-      const schedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId("auction_schedule_view").setLabel("📅 المواعيد المحجوزة").setStyle(ButtonStyle.Secondary),
-      );
 
-      // ── ابعت في شانل المزاد — مرة واحدة فقط ──────────────────────────
-      // NOTE: بنجيب الشانل بـ fetch (مش cache) عشان نضمن إنه موجود.
-      //       بنفحص آخر رسائل البوت في الشانل — لو في رسالة حديثة (آخر 100)
-      //       من البوت تحتوي على الإمبيد ده، ما نبعتوش تاني.
+      // الأسعار + أزرار الشراء → نفس الشانل اللي ضغط فيه (رد عادي مش ephemeral)
+      await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow] });
+
+      // ── شانل المزاد: شرح + المواعيد المحجوزة — مرة واحدة فقط ──────────
+      // NOTE: هنجيب الشانل بـ fetch مش cache عشان نضمن الوصول.
+      //       لو البوت بعت شرح قبل كده (آخر 20 رسالة) مش هنبعت تاني.
       let infoCh: TextChannel | null = null;
       try {
         infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID) as TextChannel;
-      } catch { /* الشانل مش موجود أو مش محمّل */ }
+      } catch { /* الشانل مش موجود */ }
 
       if (infoCh) {
-        // فحص هل البوت بعت الإمبيد قبل كده في نفس الشانل
         const recent = await infoCh.messages.fetch({ limit: 20 }).catch(() => null);
         const alreadySent = recent?.some(
-          (m) => m.author.id === client.user!.id && m.embeds.some((e) => e.title?.includes("مـزادات")),
+          (m) => m.author.id === client.user!.id && m.embeds.some((e) => e.title?.includes("كيف يعمل")),
         ) ?? false;
 
-        if (alreadySent) {
-          await interaction.editReply({ content: `📌 أسعار المزاد موجودة بالفعل في <#${AUCTION_INFO_CHANNEL_ID}>` });
-        } else {
-          await infoCh.send({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
-          await interaction.editReply({ content: `✅ تم إرسال أسعار المزاد في <#${AUCTION_INFO_CHANNEL_ID}>` });
+        if (!alreadySent) {
+          // إمبيد الشرح
+          const howEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+            .setTitle("🎰 كيف يعمل المزاد؟")
+            .setDescription(
+              `1️⃣ اختر نوع المزاد\n` +
+              `2️⃣ اختر الموعد المناسب\n` +
+              `3️⃣ ادفع عبر ProBot ويتأكد حجزك\n` +
+              `4️⃣ في الموعد، البوت يفتح روم المزاد تلقائياً\n` +
+              `5️⃣ الناس تتزايد — من يكتب أعلى مبلغ يفوز!\n` +
+              `⏱️ المزاد ينتهي بعد **دقيقتين** من آخر عرض`,
+            )
+            .setColor(0x5865f2)
+            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+          if (guildIconURL) howEmbed.setThumbnail(guildIconURL);
+
+          const schedRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder().setCustomId("auction_schedule_view").setLabel("📅 المواعيد المحجوزة").setStyle(ButtonStyle.Secondary),
+          );
+          await infoCh.send({ embeds: [howEmbed], components: [schedRow] });
         }
-      } else {
-        await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow, schedRow] });
       }
       return;
     }
