@@ -1872,6 +1872,55 @@ client.on(Events.MessageCreate, async (message: Message) => {
     }
   }
 
+  // ── أونر يمنشن البوت في تكت شراء → تخطي الدفع ───────────────────────────
+  // لو أونر (OWNER_ID أو Administrator) كتب @البوت في تكت شراء متجر pending،
+  // البوت يرد "حاضر يعمنا" ويعتبر الدفع اتم ويسأل الشاري عن اسم المتجر.
+  if (
+    client.user &&
+    message.mentions.has(client.user.id) &&
+    !isRoomChannel
+  ) {
+    const senderMember =
+      message.guild.members.cache.get(userId) ??
+      (await message.guild.members.fetch(userId).catch(() => null));
+    const senderIsOwner =
+      userId === OWNER_ID ||
+      (senderMember?.permissions.has(PermissionFlagsBits.Administrator) ?? false);
+
+    if (senderIsOwner) {
+      // ابحث عن تذكرة شراء متجر pending في نفس الشانل
+      const pendingTicket = await db
+        .select()
+        .from(purchasesTable)
+        .where(
+          and(
+            eq(purchasesTable.ticketChannelId, channel.id),
+            eq(purchasesTable.status, "pending")
+          )
+        )
+        .then((rows) => rows[0]);
+
+      if (pendingTicket) {
+        // ✅ رد الأونر
+        await message.reply("حاضر يعمنا <:cry:1504829193278460004>");
+
+        // انقل الشراء لمرحلة انتظار اسم الروم
+        await db
+          .update(purchasesTable)
+          .set({ status: "awaiting_room_name" })
+          .where(eq(purchasesTable.id, pendingTicket.id));
+
+        // اسأل الشاري عن اسم المتجر
+        await channel.send(
+          `✅ تم تأكيد الطلب!\n\n` +
+          `<@${pendingTicket.discordUserId}> اكتب اسم الروم اللي عايزه هنا ⬇️\n` +
+          `*(بالعربي أو الانجليزي، بدون زخارف أو إيموجيات)*`
+        );
+        return;
+      }
+    }
+  }
+
   // ── انتظار اسم الروم بعد تأكيد الدفع ────────────────────────────────────
   // NOTE: بعد ما ProBot يتحقق، الـ status بيبقى "awaiting_room_name".
   //       الرسالة الجاية من نفس اليوزر في نفس الشانل بتعتبر اسم الروم.
