@@ -17,6 +17,8 @@
  * ╚══════════════════════════════════════════════════════════════════════╝
  */
 
+import { findBadWord } from "./badwords.js";
+
 import {
   Client,
   GatewayIntentBits,
@@ -1928,6 +1930,25 @@ client.on(Events.MessageCreate, async (message: Message) => {
     .then((rows) => rows[0] ?? null);
 
   const isRoomChannel = roomPurchase !== null;
+
+  // ── فلتر الشتايم (كل الشانلات عدا رومات المزاد) ──────────────────────────
+  // NOTE: المطابقة بتشتغل على مستوى الكلمة الكاملة فقط — مش جزء من كلمة.
+  //       الكلمة لازم تكون token منفصل (مفصول بمسافة أو تنقيط).
+  const foundBadWord = findBadWord(content);
+  if (foundBadWord) {
+    await message.delete().catch(() => {});
+    const { warningCount, banned: nowBanned } = await addWarning(
+      userId, username, `استخدام لفظ خارج: "${foundBadWord}"`, content
+    );
+    try {
+      await message.author.send(
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
+          : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
+      );
+    } catch {}
+    return;
+  }
 
   if (isRoomChannel) {
     // ── حذف اللينكات ────────────────────────────────────────────────────
