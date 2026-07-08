@@ -1364,9 +1364,21 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
     const DIV = "ـﮩ════════════════ﮩـ";
 
-    // تحديد لون الـ embed حسب حالة الرصيد
-    const hasAny = u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
-    const embedColor = hasAny ? 0xffd700 : 0x2b2d31; // ذهبي لو في رصيد، رمادي لو فاضي
+    // فحص صلاحية الأدمنستراتور للتارجت — cache أولاً ثم fetch كـ fallback
+    const targetMember =
+      message.guild?.members.cache.get(targetId) ??
+      (await message.guild?.members.fetch(targetId).catch(() => null)) ??
+      null;
+    const targetIsAdmin = targetMember?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
+
+    // الأدمن: رصيد لا نهائي → عرض ∞ وتلوين ملكي
+    const everyoneDisplay = targetIsAdmin ? "∞" : String(u.everyoneBalance);
+    const hereDisplay     = targetIsAdmin ? "∞" : String(u.hereBalance);
+    const offersDisplay   = targetIsAdmin ? "∞" : String(u.offersBalance);
+
+    const hasAny     = targetIsAdmin || u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
+    const embedColor = targetIsAdmin ? 0x9b59b6 : hasAny ? 0xffd700 : 0x2b2d31;
+    // بنفسجي للأدمن، ذهبي لو في رصيد، رمادي لو فاضي
 
     const targetLabel = mentionedUser
       ? `رصيد **${targetUser.globalName ?? targetUser.username}** من المنشنات`
@@ -1380,17 +1392,17 @@ client.on(Events.MessageCreate, async (message: Message) => {
       .addFields(
         {
           name:   `${STAR_EMOJI} @everyone`,
-          value:  `> ${MONEY_EMOJI} الرصيد : **${u.everyoneBalance}** منشن\n> ${DIV}`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${everyoneDisplay}** منشن\n> ${DIV}`,
           inline: false,
         },
         {
           name:   `${STAR_EMOJI} @here`,
-          value:  `> ${MONEY_EMOJI} الرصيد : **${u.hereBalance}** منشن\n> ${DIV}`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${hereDisplay}** منشن\n> ${DIV}`,
           inline: false,
         },
         {
           name:   `${STAR_EMOJI} <@&${OFFERS_ROLE_ID}>`,
-          value:  `> ${MONEY_EMOJI} الرصيد : **${u.offersBalance}** منشن\n> ${DIV}`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${offersDisplay}** منشن\n> ${DIV}`,
           inline: false,
         },
       )
@@ -1519,50 +1531,58 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const usedOffers   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
 
     if (usedEveryone || usedHere || usedOffers) {
-      const u = await getOrCreateUser(userId, username);
+      // ── الأدمنستراتور: رصيد لا نهائي — لا خصم ولا كولداون ──────────────
+      // message.member متاح دايماً في guild messages — بنستخدمه مباشرة بدون fetch
+      const isAdmin = (message.member ?? await message.guild.members.fetch(userId).catch(() => null))
+        ?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
 
-      // خصم الرصيد
-      const updates: Partial<{
-        everyoneBalance: number;
-        hereBalance:     number;
-        offersBalance:   number;
-      }> = {};
-      if (usedEveryone) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
-      if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance     - 1);
-      if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance   - 1);
+      if (!isAdmin) {
+        const u = await getOrCreateUser(userId, username);
 
-      await db
-        .update(botUsersTable)
-        .set(updates)
-        .where(eq(botUsersTable.discordUserId, userId));
+        // خصم الرصيد
+        const updates: Partial<{
+          everyoneBalance: number;
+          hereBalance:     number;
+          offersBalance:   number;
+        }> = {};
+        if (usedEveryone) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
+        if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance     - 1);
+        if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance   - 1);
 
-      const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
-      const newHere     = updates.hereBalance     ?? u.hereBalance;
-      const newOffers   = updates.offersBalance   ?? u.offersBalance;
-      const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0;
+        await db
+          .update(botUsersTable)
+          .set(updates)
+          .where(eq(botUsersTable.discordUserId, userId));
 
-      if (!hasBalance) {
-        // رصيد خلص — اسحب الرول نهائياً → أي محاولة منشن تانية بتطلع "Failed to send"
-        await revokeMentionRole(message.guild, userId);
-        try {
-          await message.author.send(
-            `⛔ رصيد المنشنات بتاعك خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
-            `📊 رصيدك الحالي:\n` +
-            `  📢 @everyone: ${newEveryone}\n` +
-            `  📣 @here: ${newHere}\n` +
-            `  🔔 @offers: ${newOffers}`
-          );
-        } catch {}
-      } else {
-        // في رصيد — اسحب الرول 30 دقيقة (كولداون) ثم رجعه تلقائياً
-        await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
-        const lines: string[] = [];
-        if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
-        if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
-        if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
-        lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
-        try { await message.author.send(lines.join("\n")); } catch {}
+        const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
+        const newHere     = updates.hereBalance     ?? u.hereBalance;
+        const newOffers   = updates.offersBalance   ?? u.offersBalance;
+        const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0;
+
+        if (!hasBalance) {
+          // رصيد خلص — اسحب الرول نهائياً → أي محاولة منشن تانية بتطلع "Failed to send"
+          await revokeMentionRole(message.guild, userId);
+          try {
+            await message.author.send(
+              `⛔ رصيد المنشنات بتاعك خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+              `📊 رصيدك الحالي:\n` +
+              `  📢 @everyone: ${newEveryone}\n` +
+              `  📣 @here: ${newHere}\n` +
+              `  🔔 @offers: ${newOffers}`
+            );
+          } catch {}
+        } else {
+          // في رصيد — اسحب الرول 30 دقيقة (كولداون) ثم رجعه تلقائياً
+          await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
+          const lines: string[] = [];
+          if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
+          if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
+          if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
+          lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
+          try { await message.author.send(lines.join("\n")); } catch {}
+        }
       }
+      // الأدمن: مفيش خصم ولا إشعار — المنشن بيمشي بحرية كاملة
     }
   }
 
