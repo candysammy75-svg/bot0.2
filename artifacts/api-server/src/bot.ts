@@ -267,6 +267,65 @@ async function cancelPendingMentionPurchase(userId: string, notify: boolean): Pr
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  Store Rename — تغيير اسم المتجر (In-Memory)
+//
+//  نفس نمط الـ pendingMentionPurchases بس لعملية تغيير اسم المتجر.
+//  الـ flow:
+//    1. المستخدم يضغط "شراء تغيير الاسم" → يظهر له أمر التحويل + timeout دقيقتين
+//    2. ProBot يأكد التحويل → البوت يبعت زرار "اكتب الاسم الجديد"
+//    3. المستخدم يضغط الزرار → مودال يفتح
+//    4. يكتب الاسم → البوت يغير اسم الشانل ويأكد
+//
+//  pendingStoreRenameReady: بعد تأكيد ProBot — ينتظر المستخدم يضغط الزرار
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** سعر تغيير اسم المتجر بالكريدت */
+const STORE_RENAME_PRICE = 1_000_000;
+
+/**
+ * يحوّل المسافات العادية (ASCII 0x20) لـ NO-BREAK SPACE (U+00A0)
+ * عشان Discord ما يحوّلهاش لـ `-` في اسم الشانل.
+ */
+function formatChannelName(name: string): string {
+  return name.replace(/ /g, "\u00A0");
+}
+
+interface PendingStoreRename {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  currentName:   string;
+  transferAmt:   number;
+  netPrice:      number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+const pendingStoreRenames    = new Map<string, PendingStoreRename>();
+const pendingStoreRenameReady = new Map<string, { purchaseId: number; roomChannelId: string }>();
+
+async function cancelPendingStoreRename(userId: string, notify: boolean): Promise<void> {
+  const pending = pendingStoreRenames.get(userId);
+  if (!pending) return;
+  clearTimeout(pending.timeoutId);
+  pendingStoreRenames.delete(userId);
+  if (!notify) return;
+  try {
+    const user = await client.users.fetch(userId);
+    await user.send(
+      `⏰ **انتهت مهلة تغيير اسم المتجر**\n\n` +
+      `عملية تغيير اسم **${pending.currentName}** اتكنسلت تلقائياً ` +
+      `لأن مفيش تحويل اتعمل خلال دقيقتين.\n` +
+      `لو عايز تغير تاني، ابدأ عملية الشراء من الأول. 🔄`
+    );
+  } catch {
+    // DMs مغلقة — تجاهل
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  DB Helpers — دوال قاعدة البيانات
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1338,116 +1397,122 @@ client.on(Events.MessageCreate, async (message: Message) => {
           .then((r) => r[0]);
 
         if (!auctionTicket) {
-          // ── تحقق من عملية منشن معلقة ─────────────────────────────────────
-          // NOTE: ProBot بيكتب مين حوّل في الرسالة — نحاول نجيب الـ Discord IDs
-          //       من الـ mentions. لو لقينا يوزر عنده pending بنفس المبلغ → نكمّل.
-          //       لو مش لاقيين match بالـ ID → نجرب بالمبلغ بس (بدون ambiguity).
           const mentionIds = [...searchText.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]);
 
-          // ابحث عن pending purchase يطابق: المبلغ + (الـ ID لو موجود في الرسالة)
-          let matchedPending: PendingMentionPurchase | undefined;
-
-          // أولاً: حاول تطابق بالـ user ID
+          // ── 1. تحقق من منشن معلق ──────────────────────────────────────────
+          let matchedMention: PendingMentionPurchase | undefined;
           if (mentionIds.length > 0) {
-            matchedPending = mentionIds
+            matchedMention = mentionIds
               .map((id) => pendingMentionPurchases.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-
-          // ثانياً: لو مش لقيت بالـ ID → طابق بالمبلغ (أول pending مطابق في السيرفر)
-          if (!matchedPending) {
-            matchedPending = [...pendingMentionPurchases.values()].find(
+          if (!matchedMention) {
+            const mentionCandidates = [...pendingMentionPurchases.values()].filter(
               (p) => paid >= p.netPrice && p.guildId === message.guild!.id
             );
-          }
-
-          if (!matchedPending) {
-            // ── Fallback آمن: طابق بالمبلغ بس لو في candidate واحد بالظبط ──
-            // NOTE: لو في أكتر من candidate بنفس المبلغ → رفض لتفادي الـ mis-attribution.
-            //       اللوج بيساعد الأدمن يتابع الحالات دي.
-            const amountCandidates = [...pendingMentionPurchases.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (amountCandidates.length === 1) {
-              matchedPending = amountCandidates[0];
-              logger.warn(
-                { userId: matchedPending!.userId, paid, mentionKey: matchedPending!.mentionKey },
-                "Mention purchase matched by amount only (no sender ID in ProBot message) — single candidate, proceeding"
-              );
-            } else if (amountCandidates.length > 1) {
-              logger.warn(
-                { paid, candidateCount: amountCandidates.length },
-                "Mention purchase amount matched multiple pending purchases — cannot determine sender, ignoring"
-              );
-              return;
-            } else {
-              return;
+            if (mentionCandidates.length === 1) {
+              matchedMention = mentionCandidates[0];
+              logger.warn({ userId: matchedMention.userId, paid }, "Mention matched by amount only — single candidate");
+            } else if (mentionCandidates.length > 1) {
+              logger.warn({ paid, candidateCount: mentionCandidates.length }, "Mention amount ambiguous — skipping mention check");
             }
           }
 
-          // ✅ تأكيد شراء المنشن — أضف الرصيد وكنسل الـ timeout
-          await cancelPendingMentionPurchase(matchedPending.userId, false);
+          if (matchedMention) {
+            // ✅ تأكيد شراء المنشن
+            await cancelPendingMentionPurchase(matchedMention.userId, false);
+            const buyer      = await getOrCreateUser(matchedMention.userId, matchedMention.username);
+            const balKey     =
+              matchedMention.mentionKey === "here"     ? "hereBalance" :
+              matchedMention.mentionKey === "everyone" ? "everyoneBalance" : "offersBalance";
+            const newBalance = buyer[balKey] + matchedMention.qty;
 
-          const buyer       = await getOrCreateUser(matchedPending.userId, matchedPending.username);
-          const balKey      =
-            matchedPending.mentionKey === "here"     ? "hereBalance" :
-            matchedPending.mentionKey === "everyone" ? "everyoneBalance" :
-                                                       "offersBalance";
-          const newBalance  = buyer[balKey] + matchedPending.qty;
+            await db.update(botUsersTable)
+              .set({ [balKey]: newBalance })
+              .where(eq(botUsersTable.discordUserId, matchedMention.userId));
+            if (newBalance > 0 && message.guild) await grantMentionRole(message.guild, matchedMention.userId);
 
-          await db
-            .update(botUsersTable)
-            .set({ [balKey]: newBalance })
-            .where(eq(botUsersTable.discordUserId, matchedPending.userId));
+            logger.info(
+              { userId: matchedMention.userId, mentionKey: matchedMention.mentionKey, qty: matchedMention.qty, newBalance },
+              "Mention purchase completed via ProBot transfer"
+            );
 
-          if (newBalance > 0 && message.guild) {
-            await grantMentionRole(message.guild, matchedPending.userId);
+            const DIV_C        = "ـﮩ════════════════ﮩـ";
+            const guildIconURL = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+            const confirmFiles: AttachmentBuilder[] = [];
+            const confirmEmbed = new EmbedBuilder()
+              .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+              .setTitle(`${STAR_EMOJI} تم تأكيد شراء المنشن!`)
+              .setDescription(`<@${matchedMention.userId}> ${MONEY_EMOJI}\n> ${DIV_C}`)
+              .setColor(0x00ff88)
+              .addFields(
+                { name: `${STAR_EMOJI} النوع`,         value: `> ${MONEY_EMOJI} **${matchedMention.label}**\n> ${DIV_C}`,           inline: false },
+                { name: `${STAR_EMOJI} الكمية`,         value: `> ${MONEY_EMOJI} **${matchedMention.qty}** منشن\n> ${DIV_C}`,        inline: false },
+                { name: `${STAR_EMOJI} رصيدك الجديد`,  value: `> ${MONEY_EMOJI} **${newBalance}** منشن\n> ${DIV_C}`,                 inline: false },
+              )
+              .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+            if (fs.existsSync(DRAGON_BANNER_PATH)) {
+              confirmFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+              confirmEmbed.setImage("attachment://dragon_banner.webp");
+            }
+            await channel.send({ embeds: [confirmEmbed], files: confirmFiles });
+            return;
           }
 
-          logger.info(
-            { userId: matchedPending.userId, mentionKey: matchedPending.mentionKey, qty: matchedPending.qty, newBalance },
-            "Mention purchase completed via ProBot transfer"
-          );
+          // ── 2. تحقق من تغيير اسم متجر معلق ──────────────────────────────
+          let matchedRename: PendingStoreRename | undefined;
+          if (mentionIds.length > 0) {
+            matchedRename = mentionIds
+              .map((id) => pendingStoreRenames.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedRename) {
+            const renameCandidates = [...pendingStoreRenames.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (renameCandidates.length === 1) {
+              matchedRename = renameCandidates[0];
+              logger.warn({ userId: matchedRename.userId, paid }, "Store rename matched by amount only — single candidate");
+            } else if (renameCandidates.length > 1) {
+              logger.warn({ paid, candidateCount: renameCandidates.length }, "Store rename amount ambiguous");
+            }
+          }
 
-          // ── إرسال تأكيد في نفس الشانل بـ embed كامل ────────────────────────
-          const DIV_CONFIRM   = "ـﮩ════════════════ﮩـ";
-          const guildIconURL  = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-          const confirmFiles: AttachmentBuilder[] = [];
+          if (!matchedRename) return;
 
-          const confirmEmbed = new EmbedBuilder()
-            .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-            .setTitle(`${STAR_EMOJI} تم تأكيد شراء المنشن!`)
-            .setDescription(
-              `<@${matchedPending.userId}> ${MONEY_EMOJI}\n` +
-              `> ${DIV_CONFIRM}`
-            )
+          // ✅ ProBot أكد الدفع — كنسل الـ timeout وابعت زرار المودال
+          await cancelPendingStoreRename(matchedRename.userId, false);
+          pendingStoreRenameReady.set(matchedRename.userId, {
+            purchaseId:    matchedRename.purchaseId,
+            roomChannelId: matchedRename.roomChannelId,
+          });
+
+          const DIV_R        = "ـﮩ════════════════ﮩـ";
+          const guildIconURLR = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+          const renameReadyEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Dragon $hop", iconURL: guildIconURLR })
+            .setTitle(`${STAR_EMOJI} تم تأكيد الدفع!`)
+            .setDescription(`<@${matchedRename.userId}> ${MONEY_EMOJI}\n> ${DIV_R}`)
             .setColor(0x00ff88)
-            .addFields(
-              {
-                name:  `${STAR_EMOJI} النوع`,
-                value: `> ${MONEY_EMOJI} **${matchedPending.label}**\n> ${DIV_CONFIRM}`,
-                inline: false,
-              },
-              {
-                name:  `${STAR_EMOJI} الكمية`,
-                value: `> ${MONEY_EMOJI} **${matchedPending.qty}** منشن\n> ${DIV_CONFIRM}`,
-                inline: false,
-              },
-              {
-                name:  `${STAR_EMOJI} رصيدك الجديد`,
-                value: `> ${MONEY_EMOJI} **${newBalance}** منشن\n> ${DIV_CONFIRM}`,
-                inline: false,
-              },
-            )
-            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+            .addFields({
+              name:  `${STAR_EMOJI} الخطوة التالية`,
+              value: `> ${MONEY_EMOJI} اضغط الزر عشان تكتب الاسم الجديد للمتجر\n> ${DIV_R}`,
+              inline: false,
+            })
+            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLR });
 
-          if (fs.existsSync(DRAGON_BANNER_PATH)) {
-            confirmFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
-            confirmEmbed.setImage("attachment://dragon_banner.webp");
-          }
+          const renameActionBtn = new ButtonBuilder()
+            .setCustomId(`open_store_rename_${matchedRename.userId}`)
+            .setLabel("✏️ اكتب الاسم الجديد")
+            .setStyle(ButtonStyle.Primary);
 
-          await channel.send({ embeds: [confirmEmbed], files: confirmFiles });
+          await channel.send({
+            content:    `<@${matchedRename.userId}>`,
+            embeds:     [renameReadyEmbed],
+            components: [new ActionRowBuilder<ButtonBuilder>().addComponents(renameActionBtn)],
+          });
 
+          logger.info({ userId: matchedRename.userId, purchaseId: matchedRename.purchaseId }, "Store rename confirmed — waiting for modal");
           return;
         }
 
@@ -2076,6 +2141,68 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ── حالة خاصة: تغيير اسم المتجر ─────────────────────────────────────────
+    if (key === "change_store_name") {
+      const userId = interaction.user.id;
+
+      // تحقق من وجود متجر للمستخدم (completed purchase + discordRoomId)
+      const userPurchases = await db.select().from(purchasesTable).where(
+        and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed"))
+      );
+      const userStore = userPurchases.find((p) => p.discordRoomId);
+
+      if (!userStore) {
+        await interaction.editReply({
+          content:
+            `❌ **مش عندك متجر!**\n\n` +
+            `لازم يكون عندك متجر عشان تقدر تغير الاسم.\n` +
+            `ادخل الشوب واشتري متجر الأول. 🏪`,
+        });
+        return;
+      }
+
+      const DIV_S    = "ـﮩ════════════════ﮩـ";
+      const gIU      = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const renamePrice = calcTransferAmount(STORE_RENAME_PRICE);
+
+      const priceEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIU })
+        .setTitle(`${STAR_EMOJI} تغيير اسم المتجر`)
+        .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_S}`)
+        .setColor(0x00bfff)
+        .addFields(
+          {
+            name:  `${STAR_EMOJI} متجرك الحالي`,
+            value: `> ${MONEY_EMOJI} **${userStore.customRoomName ?? userStore.roomName}**\n> ${DIV_S}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} السعر (شامل عمولة 5%)`,
+            value: `> ${MONEY_EMOJI} **${renamePrice.toLocaleString()}** كريدت\n> ${DIV_S}`,
+            inline: false,
+          },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIU });
+
+      const sFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        sFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        priceEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const buyRenameBtn = new ButtonBuilder()
+        .setCustomId(`buy_change_store_name_${userStore.id}`)
+        .setLabel("✏️ شراء تغيير الاسم")
+        .setStyle(ButtonStyle.Primary);
+
+      await interaction.editReply({
+        embeds:     [priceEmbed],
+        files:      sFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyRenameBtn)],
+      });
+      return;
+    }
+
     // ── حالة خاصة: أزرار أسعار المنشنات — كل زرار يعرض سعره فقط + زر شراء ──
     const MENTION_BUY_KEYS: Record<string, { price: number; label: string; buyId: string }> = {
       mention_here:     { price: 5_000_000,  label: "@here",                    buyId: "buy_mention_here"     },
@@ -2286,6 +2413,107 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     await interaction.editReply({ embeds: [resultEmbed], files: transferFiles });
+    await interaction.followUp({ content: `\`${cmd}\``, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // ── زرار شراء تغيير اسم المتجر (buy_change_store_name_*) ────────────────
+  // customId: buy_change_store_name_{purchaseId}
+  if (interaction.isButton() && interaction.customId.startsWith("buy_change_store_name_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("buy_change_store_name_", ""), 10);
+    const userId     = interaction.user.id;
+
+    // تحقق من عملية معلقة حالية
+    const existingRename = pendingStoreRenames.get(userId);
+    if (existingRename) {
+      const remainingSec = Math.max(0, Math.ceil((existingRename.expiresAt - Date.now()) / 1000));
+      const timeStr = `${Math.floor(remainingSec / 60)}:${String(remainingSec % 60).padStart(2, "0")} دقيقة`;
+      await interaction.editReply({
+        content:
+          `❌ **عندك عملية تغيير اسم لسه شغّالة!**\n\n` +
+          `**الوقت المتبقي:** ${timeStr}\n\n` +
+          `لو دفعت، البوت هيأكدها تلقائياً.\n` +
+          `لو مش عايز تكملها، استنى الوقت ينتهي وهتتكنسل لوحدها. ⏳`,
+      });
+      return;
+    }
+
+    // تحقق من وجود الشراء وأنه للمستخدم نفسه
+    const [purchase] = await db.select().from(purchasesTable).where(eq(purchasesTable.id, purchaseId));
+    if (!purchase || purchase.discordUserId !== userId || purchase.status !== "completed" || !purchase.discordRoomId) {
+      await interaction.editReply({ content: "❌ مش لاقي المتجر ده أو انت مش صاحبه." });
+      return;
+    }
+
+    const netPrice    = STORE_RENAME_PRICE;
+    const transferAmt = calcTransferAmount(netPrice);
+    const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
+
+    // سجّل العملية المعلقة مع timeout دقيقتين
+    const expiresAt = Date.now() + 2 * 60 * 1000;
+    const timeoutId = setTimeout(
+      () => cancelPendingStoreRename(userId, true),
+      2 * 60 * 1000
+    );
+    pendingStoreRenames.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId,
+      currentName:   purchase.customRoomName ?? purchase.roomName,
+      transferAmt,
+      netPrice,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+    logger.info({ userId, purchaseId, transferAmt }, "Pending store rename created — 2min window");
+
+    const DIV_T        = "ـﮩ════════════════ﮩـ";
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const renameFiles: AttachmentBuilder[] = [];
+
+    const renameEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`${STAR_EMOJI} أمر تحويل تغيير اسم المتجر`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_T}`)
+      .setColor(0xffd700)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} المتجر الحالي`,
+          value: `> ${MONEY_EMOJI} **${purchase.customRoomName ?? purchase.roomName}**\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} السعر الصافي`,
+          value: `> ${MONEY_EMOJI} **${netPrice.toLocaleString()}** كريدت\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} مبلغ التحويل (شامل عمولة 5%)`,
+          value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} أمر التحويل — انسخه وابعثه في ProBot`,
+          value: `> \`\`\`${cmd}\`\`\`\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المهلة`,
+          value: `> ${MONEY_EMOJI} عندك **دقيقتين** تحول فيهم\n> بعدهم العملية بتتكنسل تلقائياً ⏰\n> ${DIV_T}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      renameFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      renameEmbed.setImage("attachment://dragon_text_banner.webp");
+    }
+
+    await interaction.editReply({ embeds: [renameEmbed], files: renameFiles });
     await interaction.followUp({ content: `\`${cmd}\``, flags: MessageFlags.Ephemeral });
     return;
   }
@@ -2784,6 +3012,117 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     await interaction.editReply({ content: `✅ تم تحويل الملكية بنجاح.` });
+    return;
+  }
+
+  // ── زرار فتح مودال الاسم الجديد (open_store_rename_*) ───────────────────
+  // NOTE: بيشتغل بعد تأكيد ProBot للدفع — بيفتح مودال لكتابة الاسم الجديد.
+  //       الـ customId: open_store_rename_{userId}
+  if (interaction.isButton() && interaction.customId.startsWith("open_store_rename_")) {
+    const targetUserId = interaction.customId.replace("open_store_rename_", "");
+
+    // بس اليوزر نفسه يقدر يضغط
+    if (interaction.user.id !== targetUserId) {
+      await interaction.reply({ content: "❌ الزرار ده مش ليك.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const pending = pendingStoreRenameReady.get(targetUserId);
+    if (!pending) {
+      await interaction.reply({ content: "❌ انتهت صلاحية الزرار أو العملية اتكنسلت.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`modal_store_rename_${pending.purchaseId}`)
+      .setTitle("تغيير اسم المتجر");
+
+    const nameInput = new TextInputBuilder()
+      .setCustomId("new_store_name")
+      .setLabel("الاسم الجديد للمتجر")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("مثال: Dragon VIP")
+      .setRequired(true)
+      .setMinLength(1)
+      .setMaxLength(50);
+
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(nameInput));
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── مودال تغيير اسم المتجر (modal_store_rename_*) ────────────────────────
+  // NOTE: بيعمل setName للشانل بعد استبدال المسافات العادية بـ NO-BREAK SPACE (U+00A0)
+  //       عشان Discord ما يحوّلهاش لـ `-`.
+  //       الـ customId: modal_store_rename_{purchaseId}
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_store_rename_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("modal_store_rename_", ""), 10);
+    const userId     = interaction.user.id;
+
+    // تحقق من الـ pending
+    const pending = pendingStoreRenameReady.get(userId);
+    if (!pending || pending.purchaseId !== purchaseId) {
+      await interaction.editReply({ content: "❌ انتهت صلاحية هذه العملية. حاول من الأول." });
+      return;
+    }
+    pendingStoreRenameReady.delete(userId);
+
+    const rawName     = interaction.fields.getTextInputValue("new_store_name").trim();
+    const channelName = formatChannelName(rawName); // استبدال spaces بـ U+00A0
+
+    if (!rawName || rawName.length > 50) {
+      await interaction.editReply({ content: "❌ الاسم مش صالح. اكتب اسم بين 1 و 50 حرف." });
+      return;
+    }
+
+    // جيب الشانل من Discord
+    const roomChannel = interaction.guild?.channels.cache.get(pending.roomChannelId) as import("discord.js").TextChannel | undefined;
+    if (!roomChannel) {
+      await interaction.editReply({ content: "❌ مش لاقي شانل المتجر. تواصل مع الأدمن." });
+      return;
+    }
+
+    // غيّر اسم الشانل في Discord
+    try {
+      await roomChannel.setName(channelName, `تغيير اسم المتجر — طُلب من ${interaction.user.username}`);
+    } catch (err) {
+      logger.error({ err, channelName }, "Failed to rename store channel");
+      await interaction.editReply({ content: "❌ فشل تغيير الاسم. تأكد إن البوت عنده صلاحية إدارة الشانلات." });
+      return;
+    }
+
+    // حدّث الـ DB بالاسم الجديد
+    await db.update(purchasesTable)
+      .set({ customRoomName: rawName })
+      .where(eq(purchasesTable.id, purchaseId));
+
+    logger.info({ userId, purchaseId, rawName, channelName }, "Store channel renamed successfully");
+
+    // أرسل تأكيد في الشانل المُعاد تسميته
+    const DIV_D        = "ـﮩ════════════════ﮩـ";
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const doneFiles: AttachmentBuilder[] = [];
+
+    const doneEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`${STAR_EMOJI} تم تغيير اسم المتجر!`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_D}`)
+      .setColor(0x00ff88)
+      .addFields({
+        name:  `${STAR_EMOJI} الاسم الجديد`,
+        value: `> ${MONEY_EMOJI} **${rawName}**\n> ${DIV_D}`,
+        inline: false,
+      })
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      doneFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      doneEmbed.setImage("attachment://dragon_banner.webp");
+    }
+
+    await roomChannel.send({ embeds: [doneEmbed], files: doneFiles });
+    await interaction.editReply({ content: `✅ تم تغيير اسم المتجر لـ **${rawName}** بنجاح!` });
     return;
   }
 
