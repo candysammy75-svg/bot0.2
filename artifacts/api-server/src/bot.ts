@@ -2239,23 +2239,54 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       "Pending mention purchase created — 2min window"
     );
 
+    const DIV_T        = "ـﮩ════════════════ﮩـ";
     const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-    const resultEmbed  = new EmbedBuilder()
+    const transferFiles: AttachmentBuilder[] = [];
+
+    const resultEmbed = new EmbedBuilder()
       .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-      .setTitle("📋 أمر تحويل المنشن")
+      .setTitle(`${STAR_EMOJI} أمر تحويل المنشن`)
+      .setDescription(
+        `> ${MONEY_EMOJI} <@${interaction.user.id}> اتبع الخطوات التالية\n` +
+        `> ${DIV_T}`
+      )
       .setColor(0xffd700)
       .addFields(
-        { name: "🏷️ النوع",        value: cfg.label,                                          inline: true },
-        { name: "🔢 الكمية",        value: String(qty),                                        inline: true },
-        { name: "💰 السعر الصافي",  value: `${netPrice.toLocaleString()} كريدت`,               inline: false },
-        { name: "💸 مبلغ التحويل",  value: `${transferAmt.toLocaleString()} (شامل عمولة 5%)`,  inline: false },
-        { name: "📋 أمر التحويل",   value: `\`${cmd}\``,                                       inline: false },
-        { name: "⏰ المهلة",         value: "عندك **دقيقتين** تحول فيهم، بعدهم العملية بتتكنسل تلقائياً.", inline: false },
+        {
+          name:  `${STAR_EMOJI} النوع والكمية`,
+          value: `> ${MONEY_EMOJI} **${cfg.label}** — **${qty}** منشن\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} السعر الصافي`,
+          value: `> ${MONEY_EMOJI} **${netPrice.toLocaleString()}** كريدت\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} مبلغ التحويل (شامل عمولة 5%)`,
+          value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} أمر التحويل — انسخه وابعثه في ProBot`,
+          value: `> \`\`\`${cmd}\`\`\`\n> ${DIV_T}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المهلة`,
+          value: `> ${MONEY_EMOJI} عندك **دقيقتين** تحول فيهم\n> بعدهم العملية بتتكنسل تلقائياً ⏰\n> ${DIV_T}`,
+          inline: false,
+        },
       )
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
 
-    await interaction.editReply({ embeds: [resultEmbed] });
-    await interaction.followUp({ content: cmd, flags: MessageFlags.Ephemeral });
+    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      transferFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      resultEmbed.setImage("attachment://dragon_text_banner.webp");
+    }
+
+    await interaction.editReply({ embeds: [resultEmbed], files: transferFiles });
+    await interaction.followUp({ content: `\`${cmd}\``, flags: MessageFlags.Ephemeral });
     return;
   }
 
