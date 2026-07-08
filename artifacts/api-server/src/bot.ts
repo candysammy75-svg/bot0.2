@@ -215,6 +215,58 @@ client.on("error", (err) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+//  Pending Mention Purchases — تتبع عمليات شراء المنشنات المعلقة (In-Memory)
+//
+//  كل يوزر يضغط "شراء منشن" ويكمل المودال بيتسجل هنا بـ timeout دقيقتين.
+//  لو مدفعش خلال الدقيقتين → البوت يمسح العملية ويبعتله DM.
+//  لو مدفعش ومحاول يشتري تاني → البوت يبلوكه لحد ما العملية تخلص.
+//  لو ProBot بعت رسالة تحويل تتطابق → البوت يكملها ويكنسل الـ timeout.
+//
+//  NOTE: الـ Map بتتمسح لو البوت restart — لكن ده معقول لأن الـ window دقيقتين بس.
+// ══════════════════════════════════════════════════════════════════════════════
+
+type MentionKey = "here" | "everyone" | "shop";
+
+interface PendingMentionPurchase {
+  userId:      string;
+  username:    string;
+  mentionKey:  MentionKey;
+  label:       string;
+  qty:         number;
+  netPrice:    number;
+  transferAmt: number;
+  guildId:     string;
+  expiresAt:   number;
+  timeoutId:   ReturnType<typeof setTimeout>;
+}
+
+const pendingMentionPurchases = new Map<string, PendingMentionPurchase>();
+
+/**
+ * يكنسل عملية شراء منشن معلقة ويمسحها من الـ Map.
+ * @param userId  Discord user ID
+ * @param notify  لو true يبعت DM للمستخدم إن عملية الشراء انتهت
+ */
+async function cancelPendingMentionPurchase(userId: string, notify: boolean): Promise<void> {
+  const pending = pendingMentionPurchases.get(userId);
+  if (!pending) return;
+  clearTimeout(pending.timeoutId);
+  pendingMentionPurchases.delete(userId);
+  if (!notify) return;
+  try {
+    const user = await client.users.fetch(userId);
+    await user.send(
+      `⏰ **انتهت مهلة شراء المنشن**\n\n` +
+      `عملية شراء **${pending.label} × ${pending.qty}** اتكنسلت تلقائياً ` +
+      `لأن مفيش تحويل اتعمل خلال دقيقتين.\n` +
+      `لو عايز تشتري تاني، ابدأ عملية الشراء من الأول. 🔄`
+    );
+  } catch {
+    // DMs مغلقة — تجاهل
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 //  DB Helpers — دوال قاعدة البيانات
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1285,7 +1337,94 @@ client.on(Events.MessageCreate, async (message: Message) => {
           )
           .then((r) => r[0]);
 
-        if (!auctionTicket) return;
+        if (!auctionTicket) {
+          // ── تحقق من عملية منشن معلقة ─────────────────────────────────────
+          // NOTE: ProBot بيكتب مين حوّل في الرسالة — نحاول نجيب الـ Discord IDs
+          //       من الـ mentions. لو لقينا يوزر عنده pending بنفس المبلغ → نكمّل.
+          //       لو مش لاقيين match بالـ ID → نجرب بالمبلغ بس (بدون ambiguity).
+          const mentionIds = [...searchText.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]);
+
+          // ابحث عن pending purchase يطابق: المبلغ + (الـ ID لو موجود في الرسالة)
+          let matchedPending: PendingMentionPurchase | undefined;
+
+          // أولاً: حاول تطابق بالـ user ID
+          if (mentionIds.length > 0) {
+            matchedPending = mentionIds
+              .map((id) => pendingMentionPurchases.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+
+          // ثانياً: لو مش لقيت بالـ ID → طابق بالمبلغ (أول pending مطابق في السيرفر)
+          if (!matchedPending) {
+            matchedPending = [...pendingMentionPurchases.values()].find(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+          }
+
+          if (!matchedPending) {
+            // ── Fallback آمن: طابق بالمبلغ بس لو في candidate واحد بالظبط ──
+            // NOTE: لو في أكتر من candidate بنفس المبلغ → رفض لتفادي الـ mis-attribution.
+            //       اللوج بيساعد الأدمن يتابع الحالات دي.
+            const amountCandidates = [...pendingMentionPurchases.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (amountCandidates.length === 1) {
+              matchedPending = amountCandidates[0];
+              logger.warn(
+                { userId: matchedPending!.userId, paid, mentionKey: matchedPending!.mentionKey },
+                "Mention purchase matched by amount only (no sender ID in ProBot message) — single candidate, proceeding"
+              );
+            } else if (amountCandidates.length > 1) {
+              logger.warn(
+                { paid, candidateCount: amountCandidates.length },
+                "Mention purchase amount matched multiple pending purchases — cannot determine sender, ignoring"
+              );
+              return;
+            } else {
+              return;
+            }
+          }
+
+          // ✅ تأكيد شراء المنشن — أضف الرصيد وكنسل الـ timeout
+          await cancelPendingMentionPurchase(matchedPending.userId, false);
+
+          const buyer       = await getOrCreateUser(matchedPending.userId, matchedPending.username);
+          const balKey      =
+            matchedPending.mentionKey === "here"     ? "hereBalance" :
+            matchedPending.mentionKey === "everyone" ? "everyoneBalance" :
+                                                       "offersBalance";
+          const newBalance  = buyer[balKey] + matchedPending.qty;
+
+          await db
+            .update(botUsersTable)
+            .set({ [balKey]: newBalance })
+            .where(eq(botUsersTable.discordUserId, matchedPending.userId));
+
+          if (newBalance > 0 && message.guild) {
+            await grantMentionRole(message.guild, matchedPending.userId);
+          }
+
+          logger.info(
+            { userId: matchedPending.userId, mentionKey: matchedPending.mentionKey, qty: matchedPending.qty, newBalance },
+            "Mention purchase completed via ProBot transfer"
+          );
+
+          // أبلغ المشتري بـ DM
+          try {
+            const buyerUser = await client.users.fetch(matchedPending.userId);
+            await buyerUser.send(
+              `✅ **تم تأكيد شراء المنشن!**\n\n` +
+              `**النوع:** ${matchedPending.label}\n` +
+              `**الكمية:** ${matchedPending.qty}\n` +
+              `**رصيدك الجديد:** ${newBalance} منشن\n\n` +
+              `استمتع! 🎉`
+            );
+          } catch {
+            // DMs مغلقة — تجاهل
+          }
+
+          return;
+        }
 
         // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
         // ProBot بيبلغ عن المبلغ الـ net اللي وصل للمستلم.
@@ -2013,6 +2152,29 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const cfg    = MENTION_MODAL_CONFIG[interaction.customId]!;
 
+    // ── تحقق من عملية شراء معلقة ─────────────────────────────────────────
+    // NOTE: كل يوزر ممكن يكون عنده عملية واحدة بس في نفس الوقت.
+    //       لو في عملية معلقة والوقت لسه ما خلصش → بلوك.
+    const existingPending = pendingMentionPurchases.get(interaction.user.id);
+    if (existingPending) {
+      const remainingSec = Math.max(0, Math.ceil((existingPending.expiresAt - Date.now()) / 1000));
+      const remainingMin = Math.floor(remainingSec / 60);
+      const remainingSec2 = remainingSec % 60;
+      const timeStr = remainingMin > 0
+        ? `${remainingMin}:${String(remainingSec2).padStart(2, "0")} دقيقة`
+        : `${remainingSec} ثانية`;
+      await interaction.editReply({
+        content:
+          `❌ **عندك عملية شراء منشن لسه شغّالة!**\n\n` +
+          `**النوع:** ${existingPending.label}\n` +
+          `**الكمية:** ${existingPending.qty}\n` +
+          `**الوقت المتبقي:** ${timeStr}\n\n` +
+          `لو دفعت، البوت هيأكدها تلقائياً.\n` +
+          `لو مش عايز تكملها، استنى الوقت ينتهي وهتتكنسل لوحدها. ⏳`,
+      });
+      return;
+    }
+
     const qtyRaw = interaction.fields.getTextInputValue("mention_qty").trim().replace(/[,،٬\s]/g, "");
     const qty    = parseInt(qtyRaw, 10);
 
@@ -2025,6 +2187,33 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const transferAmt = calcTransferAmount(netPrice);
     const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
 
+    // ── أضف العملية للـ pending map مع timeout دقيقتين ──────────────────
+    // NOTE: الـ mentionKey بيتعمل extract من modalId (modal_mention_here → "here")
+    const mentionKey  = interaction.customId.replace("modal_mention_", "") as MentionKey;
+    const expiresAt   = Date.now() + 2 * 60 * 1000;
+    const timeoutId   = setTimeout(
+      () => cancelPendingMentionPurchase(interaction.user.id, true),
+      2 * 60 * 1000
+    );
+
+    pendingMentionPurchases.set(interaction.user.id, {
+      userId:      interaction.user.id,
+      username:    interaction.user.username,
+      mentionKey,
+      label:       cfg.label,
+      qty,
+      netPrice,
+      transferAmt,
+      guildId:     interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    logger.info(
+      { userId: interaction.user.id, mentionKey, qty, transferAmt },
+      "Pending mention purchase created — 2min window"
+    );
+
     const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
     const resultEmbed  = new EmbedBuilder()
       .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
@@ -2036,6 +2225,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         { name: "💰 السعر الصافي",  value: `${netPrice.toLocaleString()} كريدت`,               inline: false },
         { name: "💸 مبلغ التحويل",  value: `${transferAmt.toLocaleString()} (شامل عمولة 5%)`,  inline: false },
         { name: "📋 أمر التحويل",   value: `\`${cmd}\``,                                       inline: false },
+        { name: "⏰ المهلة",         value: "عندك **دقيقتين** تحول فيهم، بعدهم العملية بتتكنسل تلقائياً.", inline: false },
       )
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
 
