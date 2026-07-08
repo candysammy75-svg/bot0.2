@@ -1912,40 +1912,27 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
-    // ── حالة خاصة: سعر منشن هير → embed أسعار المنشنات الثلاثة + زر شراء ──
-    if (key === ("mention_here" as string)) {
-      logger.info({ userId: interaction.user.id }, "mention_here prices embed triggered");
-      const MENTION_PRICES = {
-        here:     5_000_000,
-        everyone: 15_000_000,
-        offers:   8_000_000,
-      };
+    // ── حالة خاصة: أزرار أسعار المنشنات — كل زرار يعرض سعره فقط + زر شراء ──
+    const MENTION_BUY_KEYS: Record<string, { price: number; label: string; buyId: string }> = {
+      mention_here:     { price: 5_000_000,  label: "@here",                    buyId: "buy_mention_here"     },
+      mention_everyone: { price: 15_000_000, label: "@everyone",                buyId: "buy_mention_everyone" },
+      mention_shop:     { price: 8_000_000,  label: `<@&${OFFERS_ROLE_ID}>`,    buyId: "buy_mention_shop"     },
+    };
+
+    if (key in MENTION_BUY_KEYS) {
+      const cfg          = MENTION_BUY_KEYS[key]!;
       const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
       const DIV          = "ـﮩ══════════════════ﮩـ";
-      const STAR         = "<a:1111426691680714782:1484902226169430220>";
-      const MONEY        = MONEY_EMOJI;
 
       const pricesEmbed = new EmbedBuilder()
         .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-        .setTitle("💰 أسعار المنشنات")
+        .setTitle(`💰 سعر منشن ${cfg.label}`)
         .setColor(0xffd700)
-        .addFields(
-          {
-            name:   `${STAR} @here`,
-            value:  `> ${MONEY} السعر : **${MENTION_PRICES.here.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
-            inline: false,
-          },
-          {
-            name:   `${STAR} @everyone`,
-            value:  `> ${MONEY} السعر : **${MENTION_PRICES.everyone.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
-            inline: false,
-          },
-          {
-            name:   `${STAR} @offers`,
-            value:  `> <@&${OFFERS_ROLE_ID}>\n> ${MONEY} السعر : **${MENTION_PRICES.offers.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
-            inline: false,
-          },
-        )
+        .addFields({
+          name:   `${STAR_EMOJI} ${cfg.label}`,
+          value:  `> ${MONEY_EMOJI} السعر : **${cfg.price.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
+          inline: false,
+        })
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
 
       if (guildIconURL) pricesEmbed.setThumbnail(guildIconURL);
@@ -1956,15 +1943,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         pricesEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const buyMentionBtn = new ButtonBuilder()
-        .setCustomId("buy_mention")
+      const buyBtn = new ButtonBuilder()
+        .setCustomId(cfg.buyId)
         .setLabel("🛒 شراء منشن")
         .setStyle(ButtonStyle.Primary);
 
       await interaction.editReply({
         embeds:     [pricesEmbed],
         files:      bannerFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyMentionBtn)],
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyBtn)],
       });
       return;
     }
@@ -1988,20 +1975,18 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
-  // ── زرار شراء منشن (buy_mention) → يفتح مودال الكمية والنوع ──────────────
-  if (interaction.isButton() && interaction.customId === "buy_mention") {
-    const modal = new ModalBuilder()
-      .setCustomId("modal_buy_mention")
-      .setTitle("🛒 شراء منشن");
+  // ── أزرار شراء منشن (buy_mention_*) → يفتح مودال الكمية فقط (النوع معروف) ──
+  const MENTION_BUY_CONFIG: Record<string, { price: number; label: string; modalId: string }> = {
+    buy_mention_here:     { price: 5_000_000,  label: "@here",    modalId: "modal_mention_here"     },
+    buy_mention_everyone: { price: 15_000_000, label: "@everyone", modalId: "modal_mention_everyone" },
+    buy_mention_shop:     { price: 8_000_000,  label: "@offers",  modalId: "modal_mention_shop"     },
+  };
 
-    const typeInput = new TextInputBuilder()
-      .setCustomId("mention_type")
-      .setLabel("نوع المنشن (هير / إيفري / متاجر)")
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder("هير")
-      .setRequired(true)
-      .setMinLength(3)
-      .setMaxLength(10);
+  if (interaction.isButton() && interaction.customId in MENTION_BUY_CONFIG) {
+    const cfg   = MENTION_BUY_CONFIG[interaction.customId]!;
+    const modal = new ModalBuilder()
+      .setCustomId(cfg.modalId)
+      .setTitle(`شراء منشن ${cfg.label}`);
 
     const qtyInput = new TextInputBuilder()
       .setCustomId("mention_qty")
@@ -2012,57 +1997,33 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setMinLength(1)
       .setMaxLength(5);
 
-    modal.addComponents(
-      new ActionRowBuilder<TextInputBuilder>().addComponents(typeInput),
-      new ActionRowBuilder<TextInputBuilder>().addComponents(qtyInput),
-    );
-
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(qtyInput));
     await interaction.showModal(modal);
     return;
   }
 
-  // ── مودال شراء منشن (modal_buy_mention) ──────────────────────────────────
-  if (interaction.isModalSubmit() && interaction.customId === "modal_buy_mention") {
+  // ── مودال شراء منشن (modal_mention_*) ───────────────────────────────────
+  const MENTION_MODAL_CONFIG: Record<string, { price: number; label: string }> = {
+    modal_mention_here:     { price: 5_000_000,  label: "@here"    },
+    modal_mention_everyone: { price: 15_000_000, label: "@everyone" },
+    modal_mention_shop:     { price: 8_000_000,  label: "@offers"  },
+  };
+
+  if (interaction.isModalSubmit() && interaction.customId in MENTION_MODAL_CONFIG) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const cfg    = MENTION_MODAL_CONFIG[interaction.customId]!;
 
-    const MENTION_PRICES: Record<string, number> = {
-      هير:    5_000_000,
-      إيفري:  15_000_000,
-      ايفري:  15_000_000,   // بديل بدون همزة
-      متاجر:  8_000_000,
-      أوفرز:  8_000_000,
-      اوفرز:  8_000_000,
-      offers: 8_000_000,
-      here:   5_000_000,
-      everyone: 15_000_000,
-    };
-
-    const typeRaw  = interaction.fields.getTextInputValue("mention_type").trim().toLowerCase();
-    const qtyRaw   = interaction.fields.getTextInputValue("mention_qty").trim().replace(/[,،٬]/g, "");
-    const qty      = parseInt(qtyRaw, 10);
+    const qtyRaw = interaction.fields.getTextInputValue("mention_qty").trim().replace(/[,،٬\s]/g, "");
+    const qty    = parseInt(qtyRaw, 10);
 
     if (isNaN(qty) || qty <= 0) {
       await interaction.editReply({ content: "❌ أدخل عدد صحيح أكبر من صفر." });
       return;
     }
 
-    const pricePerMention = MENTION_PRICES[typeRaw];
-    if (!pricePerMention) {
-      const validTypes = "**هير** / **إيفري** / **متاجر**";
-      await interaction.editReply({ content: `❌ نوع المنشن غلط. الأنواع المتاحة: ${validTypes}` });
-      return;
-    }
-
-    const netPrice    = pricePerMention * qty;
+    const netPrice    = cfg.price * qty;
     const transferAmt = calcTransferAmount(netPrice);
     const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
-
-    const typeLabel: Record<string, string> = {
-      هير: "@here", إيفري: "@everyone", ايفري: "@everyone",
-      متاجر: "@offers", أوفرز: "@offers", اوفرز: "@offers",
-      offers: "@offers", here: "@here", everyone: "@everyone",
-    };
-    const label = typeLabel[typeRaw] ?? typeRaw;
 
     const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
     const resultEmbed  = new EmbedBuilder()
@@ -2070,16 +2031,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setTitle("📋 أمر تحويل المنشن")
       .setColor(0xffd700)
       .addFields(
-        { name: "🏷️ النوع",          value: label,                                            inline: true },
-        { name: "🔢 الكمية",          value: String(qty),                                      inline: true },
-        { name: "💰 السعر الصافي",    value: `${netPrice.toLocaleString()} كريدت`,              inline: false },
-        { name: "💸 مبلغ التحويل",    value: `${transferAmt.toLocaleString()} (شامل عمولة 5%)`, inline: false },
-        { name: "📋 أمر التحويل",     value: `\`${cmd}\``,                                     inline: false },
+        { name: "🏷️ النوع",        value: cfg.label,                                          inline: true },
+        { name: "🔢 الكمية",        value: String(qty),                                        inline: true },
+        { name: "💰 السعر الصافي",  value: `${netPrice.toLocaleString()} كريدت`,               inline: false },
+        { name: "💸 مبلغ التحويل",  value: `${transferAmt.toLocaleString()} (شامل عمولة 5%)`,  inline: false },
+        { name: "📋 أمر التحويل",   value: `\`${cmd}\``,                                       inline: false },
       )
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
 
     await interaction.editReply({ embeds: [resultEmbed] });
-    // بعث أمر التحويل كرسالة نصية ثانية عشان ينسخه بسهولة
     await interaction.followUp({ content: cmd, flags: MessageFlags.Ephemeral });
     return;
   }
