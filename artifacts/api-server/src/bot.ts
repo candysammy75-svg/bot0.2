@@ -1350,6 +1350,63 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const content  = message.content;
   const channel  = message.channel as TextChannel;
 
+  // ── !منشن — عرض رصيد المنشنات ────────────────────────────────────────────
+  // الصيغة: !منشن          → رصيد المرسل نفسه
+  //         !منشن @يوزر   → رصيد يوزر تاني
+  if (content.trim() === "!منشن" || content.trim().startsWith("!منشن ")) {
+    const mentionedUser = message.mentions.users.first() ?? null;
+    const targetUser    = mentionedUser ?? message.author;
+    const targetId      = targetUser.id;
+
+    const u            = await getOrCreateUser(targetId, targetUser.username);
+    const guildIconURL = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const avatarURL    = targetUser.displayAvatarURL({ extension: "png", size: 256 });
+
+    const DIV = "ـﮩ════════════════ﮩـ";
+
+    // تحديد لون الـ embed حسب حالة الرصيد
+    const hasAny = u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
+    const embedColor = hasAny ? 0xffd700 : 0x2b2d31; // ذهبي لو في رصيد، رمادي لو فاضي
+
+    const targetLabel = mentionedUser
+      ? `رصيد **${targetUser.globalName ?? targetUser.username}** من المنشنات`
+      : `رصيدك يا <@${userId}> من المنشنات`;
+
+    const balanceEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle("📊 رصيد المنشنات")
+      .setDescription(`> ${targetLabel}\n> ${DIV}`)
+      .setColor(embedColor)
+      .addFields(
+        {
+          name:   `${STAR_EMOJI} @everyone`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${u.everyoneBalance}** منشن\n> ${DIV}`,
+          inline: false,
+        },
+        {
+          name:   `${STAR_EMOJI} @here`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${u.hereBalance}** منشن\n> ${DIV}`,
+          inline: false,
+        },
+        {
+          name:   `${STAR_EMOJI} <@&${OFFERS_ROLE_ID}>`,
+          value:  `> ${MONEY_EMOJI} الرصيد : **${u.offersBalance}** منشن\n> ${DIV}`,
+          inline: false,
+        },
+      )
+      .setThumbnail(avatarURL)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    const bannerFiles: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      bannerFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      balanceEmbed.setImage("attachment://dragon_text_banner.webp");
+    }
+
+    await message.reply({ embeds: [balanceEmbed], files: bannerFiles }).catch(() => {});
+    return;
+  }
+
   // ── فحص الحظر ────────────────────────────────────────────────────────────
   const banned = await isUserBanned(userId);
   if (banned) {
