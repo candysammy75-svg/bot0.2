@@ -1409,19 +1409,44 @@ client.on(Events.MessageCreate, async (message: Message) => {
             "Mention purchase completed via ProBot transfer"
           );
 
-          // أبلغ المشتري بـ DM
-          try {
-            const buyerUser = await client.users.fetch(matchedPending.userId);
-            await buyerUser.send(
-              `✅ **تم تأكيد شراء المنشن!**\n\n` +
-              `**النوع:** ${matchedPending.label}\n` +
-              `**الكمية:** ${matchedPending.qty}\n` +
-              `**رصيدك الجديد:** ${newBalance} منشن\n\n` +
-              `استمتع! 🎉`
-            );
-          } catch {
-            // DMs مغلقة — تجاهل
+          // ── إرسال تأكيد في نفس الشانل بـ embed كامل ────────────────────────
+          const DIV_CONFIRM   = "ـﮩ════════════════ﮩـ";
+          const guildIconURL  = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+          const confirmFiles: AttachmentBuilder[] = [];
+
+          const confirmEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+            .setTitle(`${STAR_EMOJI} تم تأكيد شراء المنشن!`)
+            .setDescription(
+              `<@${matchedPending.userId}> ${MONEY_EMOJI}\n` +
+              `> ${DIV_CONFIRM}`
+            )
+            .setColor(0x00ff88)
+            .addFields(
+              {
+                name:  `${STAR_EMOJI} النوع`,
+                value: `> ${MONEY_EMOJI} **${matchedPending.label}**\n> ${DIV_CONFIRM}`,
+                inline: false,
+              },
+              {
+                name:  `${STAR_EMOJI} الكمية`,
+                value: `> ${MONEY_EMOJI} **${matchedPending.qty}** منشن\n> ${DIV_CONFIRM}`,
+                inline: false,
+              },
+              {
+                name:  `${STAR_EMOJI} رصيدك الجديد`,
+                value: `> ${MONEY_EMOJI} **${newBalance}** منشن\n> ${DIV_CONFIRM}`,
+                inline: false,
+              },
+            )
+            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+          if (fs.existsSync(DRAGON_BANNER_PATH)) {
+            confirmFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+            confirmEmbed.setImage("attachment://dragon_banner.webp");
           }
+
+          await channel.send({ embeds: [confirmEmbed], files: confirmFiles });
 
           return;
         }
