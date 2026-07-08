@@ -303,23 +303,33 @@ async function addWarning(
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  AutoMod Setup
-//  NOTE: البوت بيعمل قاعدة واحدة بس في Discord AutoMod:
-//  1. "Bot - Blocked Words" — بيبلوك الكلام الممنوع في كل السيرفر
-//
-//  المنشنات (@everyone / @here) مش بيتحكم فيها AutoMod —
-//  البوت بيفلترها يدوياً بس جوه رومات العملاء (في MessageCreate).
-//  ده عشان خارج الرومات الناس تقدر تمنشن بحرية.
+//  NOTE: البوت بيعمل قاعدتين في Discord AutoMod:
+//  1. "Bot - Blocked Words"  — بيبلوك الكلام الممنوع في كل السيرفر
+//  2. "Bot - Mention Block"  — بيبلوك @everyone/@here/@offers في كل السيرفر
+//                              رول "منشن مفعّل" معفي من القاعدة — البوت بيديه
+//                              لأصحاب الرومات اللي عندهم رصيد.
 // ══════════════════════════════════════════════════════════════════════════════
 async function setupAutoMod(guild: Guild): Promise<void> {
   try {
     const existingRules = await guild.autoModerationRules.fetch();
 
+    // ── إنشاء / جلب رول "منشن مفعّل" ────────────────────────────────────
+    await guild.roles.fetch();
+    let mentionRole = guild.roles.cache.find((r) => r.name === MENTION_ACTIVE_ROLE_NAME) ?? null;
+    if (!mentionRole) {
+      mentionRole = await guild.roles.create({
+        name:        MENTION_ACTIVE_ROLE_NAME,
+        mentionable: false,
+        reason:      "Dragon Bot — mention bypass role (exempted from AutoMod mention block)",
+      });
+      logger.info({ roleId: mentionRole.id }, "Created mention active role");
+    }
+    mentionActiveRoleId = mentionRole.id;
+
     // ── حذف قاعدة المنشنات القديمة لو موجودة ────────────────────────────
-    // NOTE: القاعدة دي كانت بتبلوك @everyone و @here في كل السيرفر —
-    //       اتشالت عشان نخلي المنشنات تشتغل بحرية خارج الرومات.
     const oldMentionRule = existingRules.find((r) => r.name === "Bot - Mention Balance Block");
     if (oldMentionRule) {
-      await oldMentionRule.delete("Replaced by per-room manual enforcement");
+      await oldMentionRule.delete("Replaced by AutoMod mention block with role exemption");
       logger.info("Deleted old mention AutoMod rule");
     }
 
@@ -345,9 +355,102 @@ async function setupAutoMod(guild: Guild): Promise<void> {
       });
     }
 
-    logger.info("AutoMod rules configured");
+    // ── قاعدة حجب المنشنات (سيرفر-wide + role exemption) ────────────────
+    // NOTE: رول "منشن مفعّل" معفي — البوت بيديه لأصحاب الرومات اللي عندهم رصيد.
+    //       لما الكولداون يبدأ أو الرصيد يخلص، البوت يسحب الرول →
+    //       أي محاولة منشن تانية بتطلع "Failed to send" مباشرةً.
+    const mentionBlockRuleName = "Bot - Mention Block";
+    const existingMentionBlock = existingRules.find((r) => r.name === mentionBlockRuleName);
+    const mentionKeywords = ["@everyone", "@here", `<@&${OFFERS_ROLE_ID}>`];
+
+    if (existingMentionBlock) {
+      await existingMentionBlock.edit({
+        triggerMetadata: { keywordFilter: mentionKeywords, regexPatterns: [], allowList: [] },
+        exemptRoles:     [mentionRole.id],
+        enabled:         true,
+      });
+    } else {
+      await guild.autoModerationRules.create({
+        name:        mentionBlockRuleName,
+        eventType:   AutoModerationRuleEventType.MessageSend,
+        triggerType: AutoModerationRuleTriggerType.Keyword,
+        triggerMetadata: { keywordFilter: mentionKeywords, regexPatterns: [], allowList: [] },
+        actions: [{
+          type:     AutoModerationActionType.BlockMessage,
+          metadata: { customMessage: "⛔ مش مسموح بالمنشن — رصيدك خلص أو الكولداون لسه شغال أو ده مش روم بتاعتك." },
+        }],
+        exemptRoles: [mentionRole.id],
+        enabled:     true,
+      });
+    }
+
+    logger.info({ mentionActiveRoleId }, "AutoMod rules configured");
   } catch (err) {
     logger.error({ err }, "Failed to setup AutoMod rules");
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Mention Role Helpers
+//  NOTE: البوت يدير رول "منشن مفعّل" بدل الكولداون اليدوي —
+//        سحب الرول = "Failed to send" فوراً من Discord بدون ما الرسالة تتبعت.
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** بيدي رول "منشن مفعّل" ليوزر لو مش عنده بالفعل */
+async function grantMentionRole(guild: Guild, userId: string): Promise<void> {
+  if (!mentionActiveRoleId) return;
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member || member.roles.cache.has(mentionActiveRoleId)) return;
+    await member.roles.add(mentionActiveRoleId, "Eligible: room owner with balance");
+  } catch (err) {
+    logger.error({ err, userId }, "Failed to grant mention role");
+  }
+}
+
+/** بيسحب رول "منشن مفعّل" نهائياً (رصيد خلص) */
+async function revokeMentionRole(guild: Guild, userId: string): Promise<void> {
+  if (!mentionActiveRoleId) return;
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member || !member.roles.cache.has(mentionActiveRoleId)) return;
+    await member.roles.remove(mentionActiveRoleId, "Balance depleted");
+  } catch (err) {
+    logger.error({ err, userId }, "Failed to revoke mention role");
+  }
+}
+
+/**
+ * بيسحب رول "منشن مفعّل" مؤقتاً (كولداون) ثم بيرجّعه بعد cooldownMs
+ * لو اليوزر لسه عنده رصيد.
+ */
+async function revokeMentionRoleWithCooldown(
+  guild: Guild,
+  userId: string,
+  cooldownMs: number,
+): Promise<void> {
+  if (!mentionActiveRoleId) return;
+  try {
+    const member = await guild.members.fetch(userId).catch(() => null);
+    if (!member) return;
+    if (member.roles.cache.has(mentionActiveRoleId)) {
+      await member.roles.remove(mentionActiveRoleId, "Mention sent — cooldown active");
+    }
+    setTimeout(async () => {
+      try {
+        const u = await getOrCreateUser(userId, "");
+        const hasBalance =
+          u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
+        if (!hasBalance) return; // الرصيد خلص — ما يرجعش الرول
+        const freshMember = await guild.members.fetch(userId).catch(() => null);
+        if (!freshMember || freshMember.roles.cache.has(mentionActiveRoleId!)) return;
+        await freshMember.roles.add(mentionActiveRoleId!, "Cooldown expired — balance still available");
+      } catch (err) {
+        logger.error({ err, userId }, "Failed to re-grant mention role after cooldown");
+      }
+    }, cooldownMs);
+  } catch (err) {
+    logger.error({ err, userId }, "Failed to revoke mention role for cooldown");
   }
 }
 
@@ -588,11 +691,13 @@ type AuctionType = keyof typeof AUCTION_TYPES;
 let auctionInfoMsgId:     string | null = null;
 let auctionScheduleMsgId: string | null = null;
 
-// ── كولداون المنشنات (in-memory) ──────────────────────────────────────────────
-// userId → channelId → timestamp آخر منشن مسموح
-// NOTE: بيتمسح كل ما البوت يعيد التشغيل — مقبول لأن الكولداون قصير.
-const mentionCooldowns = new Map<string, Map<string, number>>();
-const MENTION_COOLDOWN_MS = 30 * 60 * 1000; // 30 دقيقة بين كل منشن وتاني
+// ── Mention Active Role ──────────────────────────────────────────────────────
+// NOTE: رول بيديه البوت لأصحاب الرومات اللي عندهم رصيد.
+//       بيكون exempted من قاعدة AutoMod "Bot - Mention Block".
+//       لو الرصيد خلص أو الكولداون شغال → البوت يسحب الرول → "Failed to send".
+const MENTION_ACTIVE_ROLE_NAME = "منشن مفعّل";
+const MENTION_COOLDOWN_MS      = 30 * 60 * 1000; // 30 دقيقة كولداون بعد كل منشن
+let   mentionActiveRoleId: string | null = null;
 
 /** حالة المزادات الجارية (في الذاكرة — تُصفَّر عند restart البوت) */
 const activeAuctions = new Map<string, {
@@ -1346,88 +1451,61 @@ client.on(Events.MessageCreate, async (message: Message) => {
       return;
     }
 
-    // ── فلتر المنشنات يدوياً (بس جوه الرومات) ───────────────────────────
-    // NOTE: AutoMod مش بيتحكم في المنشنات — البوت هو اللي بيفلترها هنا.
-    //       خارج الرومات: @everyone و @here مسموح بيهم بحرية.
-    //       جوه الرومات: 3 شروط — صاحب الروم + كولداون خلص + رصيد كافي.
+    // ── فلتر المنشنات (جوه الرومات فقط) ────────────────────────────────────
+    // NOTE: AutoMod "Bot - Mention Block" بيحجب المنشنات لأي حد مالوش رول "منشن مفعّل".
+    //       لو الرسالة وصلت هنا معناها:
+    //         • صاحب الروم عنده الرول (مش محتاج نفحص الملكية يدوياً)
+    //         • الكولداون خلص (الرول اتسحب أثناء الكولداون)
+    //       البوت هنا بيخصم الرصيد ويدير الرول بعد المنشن.
     const usedEveryone = /@everyone/i.test(content);
     const usedHere     = /@here/i.test(content);
     const usedOffers   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
 
     if (usedEveryone || usedHere || usedOffers) {
-      // ── 1. فحص الملكية — لو مش صاحب الروم → احذف بصمت ──────────────
-      // NOTE: بيحذف الرسالة فوراً بدون أي إشعار عشان المنشن ميوصلش.
-      if (roomPurchase!.ownerId !== userId) {
-        await message.delete().catch(() => {});
-        return;
-      }
-
-      // ── 2. فحص الكولداون — لو مفضلش 30 دقيقة → احذف بصمت ───────────
-      // NOTE: يمنع إرسال منشنات بتوالي سريع حتى لو عند اليوزر رصيد.
-      const nowTs         = Date.now();
-      const userCdMap     = mentionCooldowns.get(userId) ?? new Map<string, number>();
-      const lastMentionAt = userCdMap.get(channel.id) ?? 0;
-      if (nowTs - lastMentionAt < MENTION_COOLDOWN_MS) {
-        await message.delete().catch(() => {});
-        return;
-      }
-
-      // ── 3. فحص الرصيد ─────────────────────────────────────────────────
       const u = await getOrCreateUser(userId, username);
 
-      const noEveryoneBal = usedEveryone && u.everyoneBalance <= 0;
-      const noHereBal     = usedHere     && u.hereBalance     <= 0;
-      const noOffersBal   = usedOffers   && u.offersBalance   <= 0;
-
-      if (noEveryoneBal || noHereBal || noOffersBal) {
-        // رصيد ناقص → احذف الرسالة وأبلغ اليوزر
-        await message.delete().catch(() => {});
-        const missing: string[] = [];
-        if (noEveryoneBal) missing.push("@everyone");
-        if (noHereBal)     missing.push("@here");
-        if (noOffersBal)   missing.push("@offers");
-        try {
-          await message.author.send(
-            `⛔ رسالتك اتحذفت — رصيد **${missing.join(" / ")}** خلص.\n` +
-            `📊 رصيدك الحالي:\n` +
-            `  📢 @everyone: ${u.everyoneBalance}\n` +
-            `  📣 @here: ${u.hereBalance}\n` +
-            `  🔔 @offers: ${u.offersBalance}`
-          );
-        } catch {}
-        return;
-      }
-
-      // ── 4. رصيد كافي → اخصم وسجّل الكولداون ─────────────────────────
+      // خصم الرصيد
       const updates: Partial<{
         everyoneBalance: number;
         hereBalance:     number;
         offersBalance:   number;
       }> = {};
-
       if (usedEveryone) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
-      if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance - 1);
-      if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance - 1);
+      if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance     - 1);
+      if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance   - 1);
 
       await db
         .update(botUsersTable)
         .set(updates)
         .where(eq(botUsersTable.discordUserId, userId));
 
-      // سجّل وقت المنشن في الكولداون
-      userCdMap.set(channel.id, nowTs);
-      mentionCooldowns.set(userId, userCdMap);
-
-      // أبلغ اليوزر بالرصيد المتبقي
       const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
       const newHere     = updates.hereBalance     ?? u.hereBalance;
       const newOffers   = updates.offersBalance   ?? u.offersBalance;
+      const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0;
 
-      const lines: string[] = [];
-      if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
-      if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
-      if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
-      try { await message.author.send(lines.join("\n")); } catch {}
+      if (!hasBalance) {
+        // رصيد خلص — اسحب الرول نهائياً → أي محاولة منشن تانية بتطلع "Failed to send"
+        await revokeMentionRole(message.guild, userId);
+        try {
+          await message.author.send(
+            `⛔ رصيد المنشنات بتاعك خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+            `📊 رصيدك الحالي:\n` +
+            `  📢 @everyone: ${newEveryone}\n` +
+            `  📣 @here: ${newHere}\n` +
+            `  🔔 @offers: ${newOffers}`
+          );
+        } catch {}
+      } else {
+        // في رصيد — اسحب الرول 30 دقيقة (كولداون) ثم رجعه تلقائياً
+        await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
+        const lines: string[] = [];
+        if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
+        if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
+        if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
+        lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
+        try { await message.author.send(lines.join("\n")); } catch {}
+      }
     }
   }
 
@@ -1514,6 +1592,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
           .update(botUsersTable)
           .set({ everyoneBalance: u.everyoneBalance + room.everyoneCount })
           .where(eq(botUsersTable.discordUserId, userId));
+
+      // دي رول "منشن مفعّل" — بيخلي صاحب الروم يمنشن ويعدي على AutoMod
+      await grantMentionRole(message.guild, userId);
 
       // رسالة التهنئة
       const bannerFiles: AttachmentBuilder[] = [];
@@ -2452,6 +2533,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const mentionName =
       mentionType === "offers"   ? `<@&${OFFERS_ROLE_ID}>` :
       mentionType === "here"     ? "@here"                 : "@everyone";
+
+    // لو الرصيد أصبح موجود → دي رول "منشن مفعّل" عشان يقدر يمنشن
+    if (newBalance > 0 && interaction.guild) {
+      await grantMentionRole(interaction.guild, targetUser.id);
+    }
 
     await interaction.editReply({
       content:
