@@ -588,6 +588,12 @@ type AuctionType = keyof typeof AUCTION_TYPES;
 let auctionInfoMsgId:     string | null = null;
 let auctionScheduleMsgId: string | null = null;
 
+// ── كولداون المنشنات (in-memory) ──────────────────────────────────────────────
+// userId → channelId → timestamp آخر منشن مسموح
+// NOTE: بيتمسح كل ما البوت يعيد التشغيل — مقبول لأن الكولداون قصير.
+const mentionCooldowns = new Map<string, Map<string, number>>();
+const MENTION_COOLDOWN_MS = 30 * 60 * 1000; // 30 دقيقة بين كل منشن وتاني
+
 /** حالة المزادات الجارية (في الذاكرة — تُصفَّر عند restart البوت) */
 const activeAuctions = new Map<string, {
   scheduleId:        number;
@@ -1276,8 +1282,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
   // ── فحص رومات العملاء (completed purchases) ──────────────────────────────
   // NOTE: البوت بيراقب رسائل الشانلات اللي اشتراها العملاء فقط.
   //       الشانلات التانية (زي التذاكر) بيراقبها بس لاسم الروم (تحت).
-  const isRoomChannel = await db
-    .select({ id: purchasesTable.id })
+  const roomPurchase = await db
+    .select({ id: purchasesTable.id, ownerId: purchasesTable.discordUserId })
     .from(purchasesTable)
     .where(
       and(
@@ -1285,7 +1291,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
         eq(purchasesTable.status, "completed")
       )
     )
-    .then((rows) => rows.length > 0);
+    .then((rows) => rows[0] ?? null);
+
+  const isRoomChannel = roomPurchase !== null;
 
   if (isRoomChannel) {
     // ── حذف اللينكات ────────────────────────────────────────────────────
@@ -1341,15 +1349,32 @@ client.on(Events.MessageCreate, async (message: Message) => {
     // ── فلتر المنشنات يدوياً (بس جوه الرومات) ───────────────────────────
     // NOTE: AutoMod مش بيتحكم في المنشنات — البوت هو اللي بيفلترها هنا.
     //       خارج الرومات: @everyone و @here مسموح بيهم بحرية.
-    //       جوه الرومات: محتاج رصيد، لو مفيش رصيد → الرسالة بتتحذف + تحذير.
+    //       جوه الرومات: 3 شروط — صاحب الروم + كولداون خلص + رصيد كافي.
     const usedEveryone = /@everyone/i.test(content);
     const usedHere     = /@here/i.test(content);
     const usedOffers   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
 
     if (usedEveryone || usedHere || usedOffers) {
+      // ── 1. فحص الملكية — لو مش صاحب الروم → احذف بصمت ──────────────
+      // NOTE: بيحذف الرسالة فوراً بدون أي إشعار عشان المنشن ميوصلش.
+      if (roomPurchase!.ownerId !== userId) {
+        await message.delete().catch(() => {});
+        return;
+      }
+
+      // ── 2. فحص الكولداون — لو مفضلش 30 دقيقة → احذف بصمت ───────────
+      // NOTE: يمنع إرسال منشنات بتوالي سريع حتى لو عند اليوزر رصيد.
+      const nowTs         = Date.now();
+      const userCdMap     = mentionCooldowns.get(userId) ?? new Map<string, number>();
+      const lastMentionAt = userCdMap.get(channel.id) ?? 0;
+      if (nowTs - lastMentionAt < MENTION_COOLDOWN_MS) {
+        await message.delete().catch(() => {});
+        return;
+      }
+
+      // ── 3. فحص الرصيد ─────────────────────────────────────────────────
       const u = await getOrCreateUser(userId, username);
 
-      // ── تحقق من الرصيد قبل السماح ────────────────────────────────────
       const noEveryoneBal = usedEveryone && u.everyoneBalance <= 0;
       const noHereBal     = usedHere     && u.hereBalance     <= 0;
       const noOffersBal   = usedOffers   && u.offersBalance   <= 0;
@@ -1373,7 +1398,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
         return;
       }
 
-      // ── رصيد كافي → اخصم ─────────────────────────────────────────────
+      // ── 4. رصيد كافي → اخصم وسجّل الكولداون ─────────────────────────
       const updates: Partial<{
         everyoneBalance: number;
         hereBalance:     number;
@@ -1388,6 +1413,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
         .update(botUsersTable)
         .set(updates)
         .where(eq(botUsersTable.discordUserId, userId));
+
+      // سجّل وقت المنشن في الكولداون
+      userCdMap.set(channel.id, nowTs);
+      mentionCooldowns.set(userId, userCdMap);
 
       // أبلغ اليوزر بالرصيد المتبقي
       const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
