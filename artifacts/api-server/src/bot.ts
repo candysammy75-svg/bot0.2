@@ -1401,8 +1401,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
           inline: false,
         },
         {
-          name:   `${STAR_EMOJI} <@&${OFFERS_ROLE_ID}>`,
-          value:  `> ${MONEY_EMOJI} الرصيد : **${offersDisplay}** منشن\n> ${DIV}`,
+          name:   `${STAR_EMOJI} @offers`,
+          value:  `> <@&${OFFERS_ROLE_ID}>\n> ${MONEY_EMOJI} الرصيد : **${offersDisplay}** منشن\n> ${DIV}`,
           inline: false,
         },
       )
