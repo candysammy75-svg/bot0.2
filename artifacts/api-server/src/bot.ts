@@ -1665,8 +1665,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .setAuthor({ name: "Dragon $hop", iconURL: gIW })
               .setTitle(`✅ تمت ازاله التحذير بنجاح`)
               .setDescription(
-                `<@${matchedWarningRemoval.userId}>\n> ${DIV_WR}\n` +
-                "```متكررش غلطتك مرتين <:PES_BuffClown:1496150024680378399>```"
+                `<@${matchedWarningRemoval.userId}>\n> ${DIV_WR}\n\n` +
+                `متكررش غلطتك <:PES_BuffClown:1496150024680378399>\n\n` +
+                `> ${DIV_WR}`
               )
               .setColor(0x00ff88)
               .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW });
@@ -3993,16 +3994,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         .setAuthor({ name: "Dragon $hop", iconURL: gIW2 })
         .setTitle("⚠️ تحذير للمتجر")
         .setDescription(
-          `<@${targetUser.id}>\n> ${DIV_W2}\n` +
-          `> 🔴 **تم تحذير متجرك**\n` +
-          `> **السبب:** ${reason}\n` +
+          `<@${targetUser.id}>\n> ${DIV_W2}\n\n` +
+          `**تم تحذير متجرك**\n` +
+          `**السبب:** ${reason}\n\n` +
+          `\`\`\`لو متجرك وصل 3 تحذيرات سيتم الغاء تفعيل متجرك\`\`\`\n` +
+          `لازاله التحذير يتم دفع رسوم قدرها **${WARNING_REMOVAL_PRICE.toLocaleString()}**\n\n` +
+          `> **عدد التحذيرات:** ${newWarningCount} / 3\n` +
           `> ${DIV_W2}`
         )
         .setColor(0xff4444)
-        .addFields(
-          { name: `${STAR_EMOJI} عدد التحذيرات`, value: `> ⚠️ **${newWarningCount} / 3**\n> ${DIV_W2}`,                          inline: false },
-          { name: `📋 ملاحظة`,                   value: "```لو متجرك وصل 3 تحذيرات سيتم الغاء تفعيل متجرك```", inline: false },
-        )
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW2 });
 
       const warnFiles: AttachmentBuilder[] = [];
@@ -4039,16 +4039,13 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
           .setAuthor({ name: "Dragon $hop", iconURL: gIW2 })
           .setTitle(`<a:027:1499812826255200369> تم الغاء تفعيل متجرك`)
           .setDescription(
-            `<@${targetUser.id}>\n> ${DIV_W2}\n` +
-            `> لاعادة التفعيل يرجى دفع الرسوم\n` +
+            `<@${targetUser.id}>\n> ${DIV_W2}\n\n` +
+            `لاعاده التفعيل يرجى دفع الرسوم\n\n` +
+            `\`\`\`رسوم التفعيل = 50% من قيمة المتجر\n` +
+            `المبلغ المطلوب: ${reactGross.toLocaleString()} كريدت\`\`\`\n` +
             `> ${DIV_W2}`
           )
           .setColor(0x2b2d31)
-          .addFields({
-            name:  `${STAR_EMOJI} رسوم التفعيل (50% من قيمة المتجر)`,
-            value: `> ${MONEY_EMOJI} **${reactGross.toLocaleString()}** كريدت\n> ${DIV_W2}`,
-            inline: false,
-          })
           .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW2 });
 
         const deactFiles: AttachmentBuilder[] = [];
