@@ -948,6 +948,7 @@ async function sendShopPanel(channel: TextChannel) {
 //  ClientReady — عند تشغيل البوت
 // ══════════════════════════════════════════════════════════════════════════════
 client.once(Events.ClientReady, async () => {
+  try {
   logger.info({ username: client.user?.tag }, "Discord bot is ready");
 
   // ── تسجيل Slash Commands ──────────────────────────────────────────────────
@@ -1100,6 +1101,10 @@ client.once(Events.ClientReady, async () => {
     setInterval(() => refreshAuctionScheduleMsg(guild).catch(() => {}), 5 * 60 * 1000);
 
     logger.info({ auctionInfoMsgId, auctionScheduleMsgId }, "Auction rooms locked and scheduler started");
+  }
+  } catch (err) {
+    logger.error({ err }, "Fatal error during bot initialization — exiting");
+    process.exit(1);
   }
 });
 
@@ -2542,6 +2547,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 // ══════════════════════════════════════════════════════════════════════════════
 export function startBot(): void {
   client.login(TOKEN).catch((err) => {
-    logger.error({ err }, "Failed to login to Discord");
+    logger.error({ err }, "Failed to login to Discord — exiting");
+    process.exit(1);
   });
 }
