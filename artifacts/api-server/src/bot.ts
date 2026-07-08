@@ -236,6 +236,7 @@ interface PendingMentionPurchase {
   netPrice:    number;
   transferAmt: number;
   guildId:     string;
+  channelId:   string;
   expiresAt:   number;
   timeoutId:   ReturnType<typeof setTimeout>;
 }
@@ -245,7 +246,7 @@ const pendingMentionPurchases = new Map<string, PendingMentionPurchase>();
 /**
  * يكنسل عملية شراء منشن معلقة ويمسحها من الـ Map.
  * @param userId  Discord user ID
- * @param notify  لو true يبعت DM للمستخدم إن عملية الشراء انتهت
+ * @param notify  لو true يبعت embed في الشانل إن العملية انتهت
  */
 async function cancelPendingMentionPurchase(userId: string, notify: boolean): Promise<void> {
   const pending = pendingMentionPurchases.get(userId);
@@ -254,15 +255,41 @@ async function cancelPendingMentionPurchase(userId: string, notify: boolean): Pr
   pendingMentionPurchases.delete(userId);
   if (!notify) return;
   try {
-    const user = await client.users.fetch(userId);
-    await user.send(
-      `⏰ **انتهت مهلة شراء المنشن**\n\n` +
-      `عملية شراء **${pending.label} × ${pending.qty}** اتكنسلت تلقائياً ` +
-      `لأن مفيش تحويل اتعمل خلال دقيقتين.\n` +
-      `لو عايز تشتري تاني، ابدأ عملية الشراء من الأول. 🔄`
-    );
+    const ch = await client.channels.fetch(pending.channelId).catch(() => null);
+    if (!ch || !ch.isTextBased() || !("send" in ch)) return;
+    const textCh      = ch as import("discord.js").TextChannel;
+    const guild       = textCh.guild;
+    const guildIconURL = guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const DIV_X       = "ـﮩ════════════════ﮩـ";
+    const timeoutFiles: import("discord.js").AttachmentBuilder[] = [];
+
+    const timeoutEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`⏰ انتهت مهلة شراء المنشن`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_X}`)
+      .setColor(0xff4444)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} العملية`,
+          value: `> ${MONEY_EMOJI} **${pending.label} × ${pending.qty}** منشن\n> ${DIV_X}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} السبب`,
+          value: `> مفيش تحويل اتعمل خلال دقيقتين\n> لو عايز تشتري تاني، ابدأ عملية الشراء من الأول 🔄\n> ${DIV_X}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      timeoutFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      timeoutEmbed.setImage("attachment://dragon_banner.webp");
+    }
+
+    await ch.send({ content: `<@${userId}>`, embeds: [timeoutEmbed], files: timeoutFiles });
   } catch {
-    // DMs مغلقة — تجاهل
+    // الشانل اتحذف أو البوت مالوش access — تجاهل
   }
 }
 
@@ -299,11 +326,12 @@ interface PendingStoreRename {
   transferAmt:   number;
   netPrice:      number;
   guildId:       string;
+  channelId:     string;
   expiresAt:     number;
   timeoutId:     ReturnType<typeof setTimeout>;
 }
 
-const pendingStoreRenames    = new Map<string, PendingStoreRename>();
+const pendingStoreRenames     = new Map<string, PendingStoreRename>();
 const pendingStoreRenameReady = new Map<string, { purchaseId: number; roomChannelId: string }>();
 
 async function cancelPendingStoreRename(userId: string, notify: boolean): Promise<void> {
@@ -313,15 +341,41 @@ async function cancelPendingStoreRename(userId: string, notify: boolean): Promis
   pendingStoreRenames.delete(userId);
   if (!notify) return;
   try {
-    const user = await client.users.fetch(userId);
-    await user.send(
-      `⏰ **انتهت مهلة تغيير اسم المتجر**\n\n` +
-      `عملية تغيير اسم **${pending.currentName}** اتكنسلت تلقائياً ` +
-      `لأن مفيش تحويل اتعمل خلال دقيقتين.\n` +
-      `لو عايز تغير تاني، ابدأ عملية الشراء من الأول. 🔄`
-    );
+    const ch = await client.channels.fetch(pending.channelId).catch(() => null);
+    if (!ch || !ch.isTextBased() || !("send" in ch)) return;
+    const textCh      = ch as import("discord.js").TextChannel;
+    const guild       = textCh.guild;
+    const guildIconURL = guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const DIV_X       = "ـﮩ════════════════ﮩـ";
+    const timeoutFiles: import("discord.js").AttachmentBuilder[] = [];
+
+    const timeoutEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`⏰ انتهت مهلة تغيير اسم المتجر`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_X}`)
+      .setColor(0xff4444)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} المتجر`,
+          value: `> ${MONEY_EMOJI} **${pending.currentName}**\n> ${DIV_X}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} السبب`,
+          value: `> مفيش تحويل اتعمل خلال دقيقتين\n> لو عايز تغير تاني، ابدأ عملية الشراء من الأول 🔄\n> ${DIV_X}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      timeoutFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      timeoutEmbed.setImage("attachment://dragon_banner.webp");
+    }
+
+    await ch.send({ content: `<@${userId}>`, embeds: [timeoutEmbed], files: timeoutFiles });
   } catch {
-    // DMs مغلقة — تجاهل
+    // الشانل اتحذف أو البوت مالوش access — تجاهل
   }
 }
 
@@ -2357,6 +2411,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       netPrice,
       transferAmt,
       guildId:     interaction.guildId ?? "",
+      channelId:   interaction.channelId ?? "",
       expiresAt,
       timeoutId,
     });
@@ -2465,6 +2520,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       transferAmt,
       netPrice,
       guildId:       interaction.guildId ?? "",
+      channelId:     interaction.channelId ?? "",
       expiresAt,
       timeoutId,
     });
