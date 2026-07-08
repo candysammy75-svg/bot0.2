@@ -32,6 +32,9 @@ import {
   AutoModerationRuleEventType,
   AutoModerationRuleTriggerType,
   AutoModerationActionType,
+  ModalBuilder,
+  TextInputBuilder,
+  TextInputStyle,
   type TextChannel,
   type Message,
   type Interaction,
@@ -121,8 +124,8 @@ const BANNED_WORDS = [
  *       عشان تغير الإيموجي: غير الـ id والـ name بس، animated ابقى حطها true لو animated.
  */
 const PEEPO_EMOJI = {
-  id:       "1521896847327756493",
-  name:     "Peepo_Helicopter",
+  id:       "1524223468197908651",
+  name:     "DVN_Money",
   animated: true,
 };
 
@@ -1909,6 +1912,62 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ── حالة خاصة: سعر منشن هير → embed أسعار المنشنات الثلاثة + زر شراء ──
+    if (key === "mention_here") {
+      const MENTION_PRICES = {
+        here:     5_000_000,
+        everyone: 15_000_000,
+        offers:   8_000_000,
+      };
+      const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const DIV          = "ـﮩ══════════════════ﮩـ";
+      const STAR         = "<a:1111426691680714782:1484902226169430220>";
+      const MONEY        = MONEY_EMOJI;
+
+      const pricesEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+        .setTitle("💰 أسعار المنشنات")
+        .setColor(0xffd700)
+        .addFields(
+          {
+            name:   `${STAR} @here`,
+            value:  `> ${MONEY} السعر : **${MENTION_PRICES.here.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
+            inline: false,
+          },
+          {
+            name:   `${STAR} @everyone`,
+            value:  `> ${MONEY} السعر : **${MENTION_PRICES.everyone.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
+            inline: false,
+          },
+          {
+            name:   `${STAR} @offers`,
+            value:  `> <@&${OFFERS_ROLE_ID}>\n> ${MONEY} السعر : **${MENTION_PRICES.offers.toLocaleString()}** كريدت / منشن\n> ${DIV}`,
+            inline: false,
+          },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+      if (guildIconURL) pricesEmbed.setThumbnail(guildIconURL);
+
+      const bannerFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        bannerFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        pricesEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const buyMentionBtn = new ButtonBuilder()
+        .setCustomId("buy_mention")
+        .setLabel("🛒 شراء منشن")
+        .setStyle(ButtonStyle.Primary);
+
+      await interaction.editReply({
+        embeds:     [pricesEmbed],
+        files:      bannerFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyMentionBtn)],
+      });
+      return;
+    }
+
     // اجيب السعر من DB
     const [row]     = await db.select().from(addonPricesTable).where(eq(addonPricesTable.key, key));
     const rawPrice   = row ? Number(row.price) : 0;
@@ -1925,6 +1984,102 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
     await interaction.editReply({ embeds: [embed] });
+    return;
+  }
+
+  // ── زرار شراء منشن (buy_mention) → يفتح مودال الكمية والنوع ──────────────
+  if (interaction.isButton() && interaction.customId === "buy_mention") {
+    const modal = new ModalBuilder()
+      .setCustomId("modal_buy_mention")
+      .setTitle("🛒 شراء منشن");
+
+    const typeInput = new TextInputBuilder()
+      .setCustomId("mention_type")
+      .setLabel("نوع المنشن (هير / إيفري / متاجر)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("هير")
+      .setRequired(true)
+      .setMinLength(3)
+      .setMaxLength(10);
+
+    const qtyInput = new TextInputBuilder()
+      .setCustomId("mention_qty")
+      .setLabel("عايز تشتري كم منشن")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("1")
+      .setRequired(true)
+      .setMinLength(1)
+      .setMaxLength(5);
+
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(typeInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(qtyInput),
+    );
+
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── مودال شراء منشن (modal_buy_mention) ──────────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId === "modal_buy_mention") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const MENTION_PRICES: Record<string, number> = {
+      هير:    5_000_000,
+      إيفري:  15_000_000,
+      ايفري:  15_000_000,   // بديل بدون همزة
+      متاجر:  8_000_000,
+      أوفرز:  8_000_000,
+      اوفرز:  8_000_000,
+      offers: 8_000_000,
+      here:   5_000_000,
+      everyone: 15_000_000,
+    };
+
+    const typeRaw  = interaction.fields.getTextInputValue("mention_type").trim().toLowerCase();
+    const qtyRaw   = interaction.fields.getTextInputValue("mention_qty").trim().replace(/[,،٬]/g, "");
+    const qty      = parseInt(qtyRaw, 10);
+
+    if (isNaN(qty) || qty <= 0) {
+      await interaction.editReply({ content: "❌ أدخل عدد صحيح أكبر من صفر." });
+      return;
+    }
+
+    const pricePerMention = MENTION_PRICES[typeRaw];
+    if (!pricePerMention) {
+      const validTypes = "**هير** / **إيفري** / **متاجر**";
+      await interaction.editReply({ content: `❌ نوع المنشن غلط. الأنواع المتاحة: ${validTypes}` });
+      return;
+    }
+
+    const netPrice    = pricePerMention * qty;
+    const transferAmt = calcTransferAmount(netPrice);
+    const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
+
+    const typeLabel: Record<string, string> = {
+      هير: "@here", إيفري: "@everyone", ايفري: "@everyone",
+      متاجر: "@offers", أوفرز: "@offers", اوفرز: "@offers",
+      offers: "@offers", here: "@here", everyone: "@everyone",
+    };
+    const label = typeLabel[typeRaw] ?? typeRaw;
+
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const resultEmbed  = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle("📋 أمر تحويل المنشن")
+      .setColor(0xffd700)
+      .addFields(
+        { name: "🏷️ النوع",          value: label,                                            inline: true },
+        { name: "🔢 الكمية",          value: String(qty),                                      inline: true },
+        { name: "💰 السعر الصافي",    value: `${netPrice.toLocaleString()} كريدت`,              inline: false },
+        { name: "💸 مبلغ التحويل",    value: `${transferAmt.toLocaleString()} (شامل عمولة 5%)`, inline: false },
+        { name: "📋 أمر التحويل",     value: `\`${cmd}\``,                                     inline: false },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    await interaction.editReply({ embeds: [resultEmbed] });
+    // بعث أمر التحويل كرسالة نصية ثانية عشان ينسخه بسهولة
+    await interaction.followUp({ content: cmd, flags: MessageFlags.Ephemeral });
     return;
   }
 
