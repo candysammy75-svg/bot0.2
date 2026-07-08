@@ -1894,6 +1894,23 @@ client.on(Events.MessageCreate, async (message: Message) => {
   //       أي رسالة في الروم وقت المزاد بتعتبر عرض، حتى لو مش رقم.
   //       لو الروم مقفول (مش في activeAuctions) → تجاهل الرسالة.
   if (AUCTION_ROOM_CHANNEL_IDS.includes(channel.id)) {
+    // ── فلتر الشتايم داخل رومات المزاد ──────────────────────────────────
+    const foundBadWordAuction = findBadWord(content);
+    if (foundBadWordAuction) {
+      await message.delete().catch(() => {});
+      const { warningCount, banned: nowBanned } = await addWarning(
+        userId, username, `استخدام لفظ خارج: "${foundBadWordAuction}"`, content
+      );
+      try {
+        await message.author.send(
+          nowBanned
+            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
+            : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
+        );
+      } catch {}
+      return;
+    }
+
     const auction = activeAuctions.get(channel.id);
     if (!auction) return; // الروم مقفول أو مفيش مزاد جاري
 
@@ -1931,23 +1948,27 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
   const isRoomChannel = roomPurchase !== null;
 
-  // ── فلتر الشتايم (كل الشانلات عدا رومات المزاد) ──────────────────────────
+  // ── فلتر الشتايم (رومات البوت والتذاكر فقط) ─────────────────────────────
   // NOTE: المطابقة بتشتغل على مستوى الكلمة الكاملة فقط — مش جزء من كلمة.
-  //       الكلمة لازم تكون token منفصل (مفصول بمسافة أو تنقيط).
-  const foundBadWord = findBadWord(content);
-  if (foundBadWord) {
-    await message.delete().catch(() => {});
-    const { warningCount, banned: nowBanned } = await addWarning(
-      userId, username, `استخدام لفظ خارج: "${foundBadWord}"`, content
-    );
-    try {
-      await message.author.send(
-        nowBanned
-          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
-          : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
+  //       الشانلات اللي برا سيطرة البوت (رومات عادية، عامة، إلخ) بيتجاهلها.
+  //       isTicketChannel: الشانل تحت كاتيجوري التذاكر (TICKETS_CATEGORY_ID).
+  const isTicketChannel = (channel as import("discord.js").TextChannel).parentId === TICKETS_CATEGORY_ID;
+  if (isRoomChannel || isTicketChannel) {
+    const foundBadWord = findBadWord(content);
+    if (foundBadWord) {
+      await message.delete().catch(() => {});
+      const { warningCount, banned: nowBanned } = await addWarning(
+        userId, username, `استخدام لفظ خارج: "${foundBadWord}"`, content
       );
-    } catch {}
-    return;
+      try {
+        await message.author.send(
+          nowBanned
+            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
+            : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
+        );
+      } catch {}
+      return;
+    }
   }
 
   if (isRoomChannel) {
