@@ -2008,7 +2008,53 @@ client.on(Events.MessageCreate, async (message: Message) => {
       // دي رول "منشن مفعّل" — بيخلي صاحب الروم يمنشن ويعدي على AutoMod
       await grantMentionRole(message.guild, userId);
 
-      // رسالة التهنئة
+      // ── إمبيد ترحيبي داخل الروم الجديد ────────────────────────────────
+      const guildIconURL    = message.guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const welcomeFiles: AttachmentBuilder[] = [];
+      const DIV_W = "ـﮩ════════════════ﮩـ";
+
+      const rulesText =
+        `> 1️⃣ ممنوع السب أو نشر أي نوع من المحتوى الغير لائق أو التلميح له\n` +
+        `> ${DIV_W}\n` +
+        `> 2️⃣ ممنوع نشر أي نوع من اللينكات\n` +
+        `> ${DIV_W}\n` +
+        `> 3️⃣ لا تحاول استخدام منشنات أكثر من رصيدك\n` +
+        `> ${DIV_W}\n` +
+        `> 4️⃣ ممنوع الترويج للسيرفرات\n` +
+        `> ${DIV_W}\n` +
+        `> 5️⃣ ممنوع الإسبام\n` +
+        `> ${DIV_W}`;
+
+      const welcomeEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+        .setTitle(`🎉 أهلاً بك في روومك يا <@${userId}>!`)
+        .setDescription(
+          `> ${DIV_W}\n` +
+          `> مبروك عليك الروم! هنا مساحتك الخاصة.\n` +
+          `> ${DIV_W}`
+        )
+        .setThumbnail(guildIconURL ?? null)
+        .addFields({ name: `📋 قوانين الروم`, value: rulesText, inline: false })
+        .setColor(0xf5c518)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+      // أضف البانر الرئيسي كصورة أسفل الإمبيد
+      if (fs.existsSync(DRAGON_BANNER_PATH)) {
+        welcomeFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+        welcomeEmbed.setImage("attachment://dragon_banner.webp");
+      }
+
+      // أرسل الخط (text banner) كصورة مستقلة أعلى الإمبيد
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        await newChannel.send({
+          files: [new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" })],
+        }).catch(() => {});
+      }
+
+      // أرسل الإمبيد الترحيبي
+      await newChannel.send({ embeds: [welcomeEmbed], files: welcomeFiles }).catch(() => {});
+
+      // ── رسالة التهنئة في تكت الشراء ────────────────────────────────────
       const bannerFiles: AttachmentBuilder[] = [];
       const completionEmbed = new EmbedBuilder()
         .setTitle("🎉 تم إنشاء الروم!")
