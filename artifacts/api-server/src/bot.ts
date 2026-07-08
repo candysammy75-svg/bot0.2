@@ -93,6 +93,12 @@ function calcTransferAmount(netPrice: number): number {
   return Math.ceil(netPrice / (1 - PROBOT_FEE));
 }
 
+/** شانل إرسال أوامر التحويل للتفعيل (ID ثابت) */
+const REACTIVATION_CHANNEL_ID = "1523817510435164291";
+
+/** سعر إزالة التحذير من المتجر — net قبل عمولة ProBot */
+const WARNING_REMOVAL_PRICE = 1_000_000;
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  AutoMod — الكلمات المحظورة
 //  NOTE: القائمة دي بتتبعت لـ Discord AutoMod عند بدء تشغيل البوت.
@@ -333,6 +339,37 @@ interface PendingStoreRename {
 
 const pendingStoreRenames     = new Map<string, PendingStoreRename>();
 const pendingStoreRenameReady = new Map<string, { purchaseId: number; roomChannelId: string }>();
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Warning Removal & Room Reactivation — In-Memory Pending Maps
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface PendingWarningRemoval {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  netPrice:      number;
+  transferAmt:   number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+interface PendingRoomReactivation {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  netPrice:      number;
+  transferAmt:   number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+const pendingWarningRemovals   = new Map<string, PendingWarningRemoval>();
+const pendingRoomReactivations = new Map<string, PendingRoomReactivation>();
 
 async function cancelPendingStoreRename(userId: string, notify: boolean): Promise<void> {
   const pending = pendingStoreRenames.get(userId);
@@ -1325,6 +1362,16 @@ client.once(Events.ClientReady, async () => {
       .addIntegerOption((o) =>
         o.setName("amount").setDescription("الكمية المراد إضافتها").setRequired(true)
       ),
+
+    new SlashCommandBuilder()
+      .setName("warnstore")
+      .setDescription("👑 [أونر] حذّر صاحب متجر")
+      .addUserOption((o) =>
+        o.setName("user").setDescription("صاحب المتجر").setRequired(true)
+      )
+      .addStringOption((o) =>
+        o.setName("reason").setDescription("سبب التحذير").setRequired(true)
+      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -1532,42 +1579,169 @@ client.on(Events.MessageCreate, async (message: Message) => {
             }
           }
 
-          if (!matchedRename) return;
+          if (matchedRename) {
+            // ✅ ProBot أكد الدفع — كنسل الـ timeout وابعت زرار المودال
+            await cancelPendingStoreRename(matchedRename.userId, false);
+            pendingStoreRenameReady.set(matchedRename.userId, {
+              purchaseId:    matchedRename.purchaseId,
+              roomChannelId: matchedRename.roomChannelId,
+            });
 
-          // ✅ ProBot أكد الدفع — كنسل الـ timeout وابعت زرار المودال
-          await cancelPendingStoreRename(matchedRename.userId, false);
-          pendingStoreRenameReady.set(matchedRename.userId, {
-            purchaseId:    matchedRename.purchaseId,
-            roomChannelId: matchedRename.roomChannelId,
-          });
+            const DIV_R        = "ـﮩ════════════════ﮩـ";
+            const guildIconURLR = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+            const renameReadyEmbed = new EmbedBuilder()
+              .setAuthor({ name: "Dragon $hop", iconURL: guildIconURLR })
+              .setTitle(`${STAR_EMOJI} تم تأكيد الدفع!`)
+              .setDescription(`<@${matchedRename.userId}> ${MONEY_EMOJI}\n> ${DIV_R}`)
+              .setColor(0x00ff88)
+              .addFields({
+                name:  `${STAR_EMOJI} الخطوة التالية`,
+                value: `> ${MONEY_EMOJI} اضغط الزر عشان تكتب الاسم الجديد للمتجر\n> ${DIV_R}`,
+                inline: false,
+              })
+              .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLR });
 
-          const DIV_R        = "ـﮩ════════════════ﮩـ";
-          const guildIconURLR = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-          const renameReadyEmbed = new EmbedBuilder()
-            .setAuthor({ name: "Dragon $hop", iconURL: guildIconURLR })
-            .setTitle(`${STAR_EMOJI} تم تأكيد الدفع!`)
-            .setDescription(`<@${matchedRename.userId}> ${MONEY_EMOJI}\n> ${DIV_R}`)
-            .setColor(0x00ff88)
-            .addFields({
-              name:  `${STAR_EMOJI} الخطوة التالية`,
-              value: `> ${MONEY_EMOJI} اضغط الزر عشان تكتب الاسم الجديد للمتجر\n> ${DIV_R}`,
-              inline: false,
-            })
-            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLR });
+            const renameActionBtn = new ButtonBuilder()
+              .setCustomId(`open_store_rename_${matchedRename.userId}`)
+              .setLabel("✏️ اكتب الاسم الجديد")
+              .setStyle(ButtonStyle.Primary);
 
-          const renameActionBtn = new ButtonBuilder()
-            .setCustomId(`open_store_rename_${matchedRename.userId}`)
-            .setLabel("✏️ اكتب الاسم الجديد")
-            .setStyle(ButtonStyle.Primary);
+            await channel.send({
+              content:    `<@${matchedRename.userId}>`,
+              embeds:     [renameReadyEmbed],
+              components: [new ActionRowBuilder<ButtonBuilder>().addComponents(renameActionBtn)],
+            });
 
-          await channel.send({
-            content:    `<@${matchedRename.userId}>`,
-            embeds:     [renameReadyEmbed],
-            components: [new ActionRowBuilder<ButtonBuilder>().addComponents(renameActionBtn)],
-          });
+            logger.info({ userId: matchedRename.userId, purchaseId: matchedRename.purchaseId }, "Store rename confirmed — waiting for modal");
+            return;
+          }
 
-          logger.info({ userId: matchedRename.userId, purchaseId: matchedRename.purchaseId }, "Store rename confirmed — waiting for modal");
-          return;
+          // ── 3. تحقق من إزالة تحذير معلقة ──────────────────────────────
+          let matchedWarningRemoval: PendingWarningRemoval | undefined;
+          if (mentionIds.length > 0) {
+            matchedWarningRemoval = mentionIds
+              .map((id) => pendingWarningRemovals.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedWarningRemoval) {
+            const wrCandidates = [...pendingWarningRemovals.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (wrCandidates.length === 1) matchedWarningRemoval = wrCandidates[0];
+          }
+
+          if (matchedWarningRemoval) {
+            clearTimeout(matchedWarningRemoval.timeoutId);
+            pendingWarningRemovals.delete(matchedWarningRemoval.userId);
+
+            const pur = await db.select().from(purchasesTable)
+              .where(eq(purchasesTable.id, matchedWarningRemoval.purchaseId))
+              .then((r) => r[0]);
+
+            if (pur) {
+              const newCount       = Math.max(0, pur.roomWarningCount - 1);
+              const shouldReactivate = pur.isRoomDeactivated && newCount < 3;
+              await db.update(purchasesTable)
+                .set({ roomWarningCount: newCount, isRoomDeactivated: shouldReactivate ? false : pur.isRoomDeactivated })
+                .where(eq(purchasesTable.id, pur.id));
+
+              if (shouldReactivate && pur.discordRoomId && message.guild) {
+                const roomCh = message.guild.channels.cache.get(pur.discordRoomId) as TextChannel | undefined;
+                if (roomCh) {
+                  await roomCh.permissionOverwrites.edit(pur.discordUserId, {
+                    ViewChannel:     true,
+                    SendMessages:    true,
+                    MentionEveryone: true,
+                  }).catch(() => {});
+                }
+              }
+            }
+
+            const DIV_WR = "ـﮩ════════════════ﮩـ";
+            const gIW    = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+            const wrSuccessEmbed = new EmbedBuilder()
+              .setAuthor({ name: "Dragon $hop", iconURL: gIW })
+              .setTitle(`✅ تمت ازاله التحذير بنجاح`)
+              .setDescription(
+                `<@${matchedWarningRemoval.userId}>\n> ${DIV_WR}\n` +
+                "```متكررش غلطتك مرتين <:PES_BuffClown:1496150024680378399>```"
+              )
+              .setColor(0x00ff88)
+              .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW });
+
+            const wrFiles: AttachmentBuilder[] = [];
+            if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+              wrFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+              wrSuccessEmbed.setImage("attachment://dragon_text_banner.webp");
+            }
+
+            if (matchedWarningRemoval.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedWarningRemoval.roomChannelId) as TextChannel | undefined;
+              if (roomCh) await roomCh.send({ embeds: [wrSuccessEmbed], files: wrFiles }).catch(() => {});
+            }
+
+            logger.info({ userId: matchedWarningRemoval.userId, purchaseId: matchedWarningRemoval.purchaseId }, "Warning removed via ProBot payment");
+            return;
+          }
+
+          // ── 4. تحقق من إعادة تفعيل روم معلقة ──────────────────────────
+          let matchedReactivation: PendingRoomReactivation | undefined;
+          if (mentionIds.length > 0) {
+            matchedReactivation = mentionIds
+              .map((id) => pendingRoomReactivations.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedReactivation) {
+            const reactCandidates = [...pendingRoomReactivations.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (reactCandidates.length === 1) matchedReactivation = reactCandidates[0];
+          }
+
+          if (matchedReactivation) {
+            clearTimeout(matchedReactivation.timeoutId);
+            pendingRoomReactivations.delete(matchedReactivation.userId);
+
+            await db.update(purchasesTable)
+              .set({ isRoomDeactivated: false })
+              .where(eq(purchasesTable.id, matchedReactivation.purchaseId));
+
+            if (matchedReactivation.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedReactivation.roomChannelId) as TextChannel | undefined;
+              if (roomCh) {
+                await roomCh.permissionOverwrites.edit(matchedReactivation.userId, {
+                  ViewChannel:     true,
+                  SendMessages:    true,
+                  MentionEveryone: true,
+                }).catch(() => {});
+
+                const DIV_RA = "ـﮩ════════════════ﮩـ";
+                const gIR    = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+                const reactSuccessEmbed = new EmbedBuilder()
+                  .setAuthor({ name: "Dragon $hop", iconURL: gIR })
+                  .setTitle(`✅ تم اعادة تفعيل متجرك!`)
+                  .setDescription(`<@${matchedReactivation.userId}>\n> ${DIV_RA}`)
+                  .setColor(0x00ff88)
+                  .addFields({
+                    name:  `${STAR_EMOJI} ملاحظة`,
+                    value: `> متجرك شغّال تاني! حافظ عليه وامتثل للقوانين.\n> ${DIV_RA}`,
+                    inline: false,
+                  })
+                  .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIR });
+
+                const reactFiles: AttachmentBuilder[] = [];
+                if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+                  reactFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+                  reactSuccessEmbed.setImage("attachment://dragon_text_banner.webp");
+                }
+
+                await roomCh.send({ embeds: [reactSuccessEmbed], files: reactFiles }).catch(() => {});
+              }
+            }
+
+            logger.info({ userId: matchedReactivation.userId, purchaseId: matchedReactivation.purchaseId }, "Room reactivated via ProBot payment");
+            return;
+          }
         }
 
         // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
@@ -2396,6 +2570,58 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ── حالة خاصة: تفعيل المتجر ────────────────────────────────────────────
+    if (key === "activate_store") {
+      const userId    = interaction.user.id;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      if (!userStore) {
+        await interaction.editReply({ content: "❌ مش عندك متجر." });
+        return;
+      }
+      if (!userStore.isRoomDeactivated) {
+        await interaction.editReply({ content: "✅ متجرك شغّال ومفيش داعي للتفعيل." });
+        return;
+      }
+
+      const [room] = await db.select().from(roomsTable).where(eq(roomsTable.id, userStore.roomId));
+      const reactNet   = room ? Math.ceil(Number(room.price) * 0.5) : 1_000_000;
+      const reactGross = calcTransferAmount(reactNet);
+
+      const DIV_ACT  = "ـﮩ════════════════ﮩـ";
+      const gIAct    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const actEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAct })
+        .setTitle("🔒 إعادة تفعيل المتجر")
+        .setDescription(`<@${userId}>\n> ${DIV_ACT}`)
+        .setColor(0xff9900)
+        .addFields(
+          { name: `${STAR_EMOJI} المتجر`,                             value: `> **${userStore.customRoomName ?? userStore.roomName}**\n> ${DIV_ACT}`, inline: false },
+          { name: `${STAR_EMOJI} رسوم التفعيل (50% من قيمة المتجر)`, value: `> ${MONEY_EMOJI} **${reactGross.toLocaleString()}** كريدت\n> ${DIV_ACT}`, inline: false },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAct });
+
+      const actFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        actFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        actEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const payReactBtn = new ButtonBuilder()
+        .setCustomId(`pay_reactivate_room_${userStore.id}`)
+        .setLabel(`💸 دفع رسوم التفعيل`)
+        .setStyle(ButtonStyle.Danger);
+
+      await interaction.editReply({
+        embeds:     [actEmbed],
+        files:      actFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payReactBtn)],
+      });
+      return;
+    }
+
     // اجيب السعر من DB
     const [row]     = await db.select().from(addonPricesTable).where(eq(addonPricesTable.key, key));
     const rawPrice   = row ? Number(row.price) : 0;
@@ -3166,6 +3392,118 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
+  // ── زرار دفع إزالة التحذير (pay_remove_warning_*) ───────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pay_remove_warning_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("pay_remove_warning_", ""), 10);
+    const userId     = interaction.user.id;
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(eq(purchasesTable.id, purchaseId), eq(purchasesTable.discordUserId, userId)))
+      .then((r) => r[0]);
+
+    if (!purchase) {
+      await interaction.editReply({ content: "❌ مش لاقي المتجر ده." });
+      return;
+    }
+    if (pendingWarningRemovals.has(userId)) {
+      await interaction.editReply({ content: "⏳ عندك عملية إزالة تحذير لسه شغّالة. خلّيها تخلص الأول." });
+      return;
+    }
+
+    const transferAmt = calcTransferAmount(WARNING_REMOVAL_PRICE);
+    const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
+    const expiresAt   = Date.now() + 5 * 60 * 1000;
+    const timeoutId   = setTimeout(() => { pendingWarningRemovals.delete(userId); }, 5 * 60 * 1000);
+
+    pendingWarningRemovals.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId ?? "",
+      netPrice:      WARNING_REMOVAL_PRICE,
+      transferAmt,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    const DIV_WB = "ـﮩ════════════════ﮩـ";
+    const gIWB   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const wbEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIWB })
+      .setTitle("💸 إزالة التحذير")
+      .setDescription(`<@${userId}>\n> ${DIV_WB}`)
+      .setColor(0xff9900)
+      .addFields(
+        { name: `${STAR_EMOJI} المبلغ المطلوب`, value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_WB}`, inline: false },
+        { name: `${STAR_EMOJI} الأمر`,          value: `\`\`\`${cmd}\`\`\`\n> ${DIV_WB}`,                                          inline: false },
+        { name: `${STAR_EMOJI} المهلة`,          value: `> ⏳ عندك **5 دقايق** تحول فيهم\n> ${DIV_WB}`,                             inline: false },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIWB });
+
+    await interaction.editReply({ embeds: [wbEmbed] });
+    return;
+  }
+
+  // ── زرار دفع إعادة التفعيل (pay_reactivate_room_*) ──────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pay_reactivate_room_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("pay_reactivate_room_", ""), 10);
+    const userId     = interaction.user.id;
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(eq(purchasesTable.id, purchaseId))
+      .then((r) => r[0]);
+
+    if (!purchase || !purchase.isRoomDeactivated) {
+      await interaction.editReply({ content: "❌ المتجر ده مش محتاج تفعيل." });
+      return;
+    }
+    if (purchase.discordUserId !== userId) {
+      await interaction.editReply({ content: "❌ الزرار ده مش ليك." });
+      return;
+    }
+    if (pendingRoomReactivations.has(userId)) {
+      await interaction.editReply({ content: "⏳ عندك عملية تفعيل لسه شغّالة." });
+      return;
+    }
+
+    const [room]        = await db.select().from(roomsTable).where(eq(roomsTable.id, purchase.roomId));
+    const reactNet      = room ? Math.ceil(Number(room.price) * 0.5) : 1_000_000;
+    const reactGross    = calcTransferAmount(reactNet);
+    const cmd           = `C <@${OWNER_ID}> ${reactGross}`;
+    const expiresAt     = Date.now() + 5 * 60 * 1000;
+    const timeoutId     = setTimeout(() => { pendingRoomReactivations.delete(userId); }, 5 * 60 * 1000);
+
+    pendingRoomReactivations.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId ?? "",
+      netPrice:      reactNet,
+      transferAmt:   reactGross,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    const reactChannel = interaction.guild?.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined;
+    if (reactChannel) {
+      await reactChannel.send(
+        `<@${userId}> لإعادة تفعيل متجرك حوّل المبلغ التالي:\n\`\`\`${cmd}\`\`\``
+      ).catch(() => {});
+    }
+
+    await interaction.editReply({
+      content:
+        `✅ تم إرسال أمر التحويل في <#${REACTIVATION_CHANNEL_ID}>\n` +
+        `💰 المبلغ: **${reactGross.toLocaleString()}** كريدت\n` +
+        `⏳ عندك **5 دقايق** تحول فيهم.`,
+    });
+    return;
+  }
+
   // ── زرار فتح مودال الاسم الجديد (open_store_rename_*) ───────────────────
   // NOTE: بيشتغل بعد تأكيد ProBot للدفع — بيفتح مودال لكتابة الاسم الجديد.
   //       الـ customId: open_store_rename_{userId}
@@ -3570,6 +3908,134 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       content: `✅ تم إرسال طلب تحويل الملكية. رسوم التحويل: ${Math.round(transferFee)}`,
     });
   }
+  // ── /warnstore ────────────────────────────────────────────────────────────
+  if (interaction.commandName === "warnstore") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser("user", true);
+    const reason     = interaction.options.getString("reason", true).trim();
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(eq(purchasesTable.discordUserId, targetUser.id), eq(purchasesTable.status, "completed")))
+      .then((rows) => rows.find((p) => p.discordRoomId));
+
+    if (!purchase) {
+      await interaction.editReply({ content: `❌ <@${targetUser.id}> مالوش متجر نشط.` });
+      return;
+    }
+
+    const newWarningCount  = purchase.roomWarningCount + 1;
+    const shouldDeactivate = newWarningCount >= 3 && !purchase.isRoomDeactivated;
+
+    await db.update(purchasesTable)
+      .set({
+        roomWarningCount:  newWarningCount,
+        isRoomDeactivated: purchase.isRoomDeactivated || shouldDeactivate,
+      })
+      .where(eq(purchasesTable.id, purchase.id));
+
+    const DIV_W2  = "ـﮩ════════════════ﮩـ";
+    const gIW2    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const roomCh  = interaction.guild?.channels.cache.get(purchase.discordRoomId!) as TextChannel | undefined;
+
+    if (roomCh) {
+      // ── إمبيد التحذير ──────────────────────────────────────────────────
+      const warnEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIW2 })
+        .setTitle("⚠️ تحذير للمتجر")
+        .setDescription(
+          `<@${targetUser.id}>\n> ${DIV_W2}\n` +
+          `> 🔴 **تم تحذير متجرك**\n` +
+          `> **السبب:** ${reason}\n` +
+          `> ${DIV_W2}`
+        )
+        .setColor(0xff4444)
+        .addFields(
+          { name: `${STAR_EMOJI} عدد التحذيرات`, value: `> ⚠️ **${newWarningCount} / 3**\n> ${DIV_W2}`,                          inline: false },
+          { name: `📋 ملاحظة`,                   value: "```لو متجرك وصل 3 تحذيرات سيتم الغاء تفعيل متجرك```", inline: false },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW2 });
+
+      const warnFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        warnFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        warnEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const removeWarnBtn = new ButtonBuilder()
+        .setCustomId(`pay_remove_warning_${purchase.id}`)
+        .setLabel(`💸 إزالة التحذير — ${calcTransferAmount(WARNING_REMOVAL_PRICE).toLocaleString()} كريدت`)
+        .setStyle(ButtonStyle.Secondary);
+
+      await roomCh.send({
+        content:    `<@${targetUser.id}>`,
+        embeds:     [warnEmbed],
+        files:      warnFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(removeWarnBtn)],
+      }).catch(() => {});
+
+      // ── إيقاف الروم عند 3 تحذيرات ─────────────────────────────────────
+      if (shouldDeactivate) {
+        await roomCh.permissionOverwrites.edit(targetUser.id, {
+          ViewChannel:     false,
+          SendMessages:    false,
+          MentionEveryone: false,
+        }).catch(() => {});
+
+        const [room]    = await db.select().from(roomsTable).where(eq(roomsTable.id, purchase.roomId));
+        const reactNet  = room ? Math.ceil(Number(room.price) * 0.5) : 1_000_000;
+        const reactGross = calcTransferAmount(reactNet);
+
+        const deactEmbed = new EmbedBuilder()
+          .setAuthor({ name: "Dragon $hop", iconURL: gIW2 })
+          .setTitle(`<a:027:1499812826255200369> تم الغاء تفعيل متجرك`)
+          .setDescription(
+            `<@${targetUser.id}>\n> ${DIV_W2}\n` +
+            `> لاعادة التفعيل يرجى دفع الرسوم\n` +
+            `> ${DIV_W2}`
+          )
+          .setColor(0x2b2d31)
+          .addFields({
+            name:  `${STAR_EMOJI} رسوم التفعيل (50% من قيمة المتجر)`,
+            value: `> ${MONEY_EMOJI} **${reactGross.toLocaleString()}** كريدت\n> ${DIV_W2}`,
+            inline: false,
+          })
+          .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIW2 });
+
+        const deactFiles: AttachmentBuilder[] = [];
+        if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+          deactFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+          deactEmbed.setImage("attachment://dragon_text_banner.webp");
+        }
+
+        const payReactBtn = new ButtonBuilder()
+          .setCustomId(`pay_reactivate_room_${purchase.id}`)
+          .setLabel(`💸 دفع رسوم التفعيل — ${reactGross.toLocaleString()} كريدت`)
+          .setStyle(ButtonStyle.Danger);
+
+        await roomCh.send({
+          content:    `<@${targetUser.id}>`,
+          embeds:     [deactEmbed],
+          files:      deactFiles,
+          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payReactBtn)],
+        }).catch(() => {});
+      }
+    }
+
+    await interaction.editReply({
+      content: shouldDeactivate
+        ? `✅ تم تحذير <@${targetUser.id}> وتم **إيقاف** متجره (3/3 تحذيرات).`
+        : `✅ تم تحذير <@${targetUser.id}> — تحذير **${newWarningCount}/3**.`,
+    });
+  }
+
   } catch (err) {
     logger.error({ err, interactionId: interaction.id }, "Unhandled error in InteractionCreate");
     // حاول تبلّغ المستخدم لو الـ interaction لسه ما اتردّش

@@ -68,9 +68,11 @@ export const purchasesTable = pgTable("purchases", {
   transferCommand: text("transfer_command"),               // أمر ProBot الكامل
   status:          text("status").notNull().default("pending"),
   ticketChannelId: text("ticket_channel_id"),
-  discordRoomId:   text("discord_room_id"),
-  createdAt:       timestamp("created_at").defaultNow(),
-  updatedAt:       timestamp("updated_at").defaultNow(),
+  discordRoomId:    text("discord_room_id"),
+  roomWarningCount: integer("room_warning_count").notNull().default(0),
+  isRoomDeactivated: boolean("is_room_deactivated").notNull().default(false),
+  createdAt:        timestamp("created_at").defaultNow(),
+  updatedAt:        timestamp("updated_at").defaultNow(),
 });
 
 export const insertPurchaseSchema = createInsertSchema(purchasesTable).omit({
