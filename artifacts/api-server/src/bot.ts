@@ -1913,7 +1913,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     // ── حالة خاصة: سعر منشن هير → embed أسعار المنشنات الثلاثة + زر شراء ──
-    if (key === "mention_here") {
+    if (key === ("mention_here" as string)) {
+      logger.info({ userId: interaction.user.id }, "mention_here prices embed triggered");
       const MENTION_PRICES = {
         here:     5_000_000,
         everyone: 15_000_000,
