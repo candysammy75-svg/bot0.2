@@ -1,0 +1,48 @@
+[11:12:51 AM]Server marked as offline
+[11:13:01 AM][Wispbyte]: Checking server disk space usage, this could take a few seconds...
+[11:13:01 AM][Wispbyte]: Updating process configuration files...
+[11:13:01 AM][Wispbyte]: Ensuring file permissions are set correctly, this could take a few seconds...
+[11:13:01 AM]Server marked as starting
+ __        ___           _           _       
+ \ \      / (_)___ _ __ | |__  _   _| |_ ___ 
+  \ \ /\ / /| / __| '_ \| '_ \| | | | __/ _ \
+   \ V  V / | \__ \ |_) | |_) | |_| | ||  __/
+    \_/\_/  |_|___/ .__/|_.__/ \__, |\__\___|
+                  |_|          |___/         
+Your server is currently starting! Enjoy using Wispbyte
+[11:13:06 AM]v19.9.0
+[11:13:06 AM]Server marked as running
+[11:13:06 AM]:/home/container$ pnpm install cd artifacts/api-server pnpm run build
+[11:13:10 AM]! Corepack is about to download https://registry.npmjs.org/pnpm/-/pnpm-11.10.0.tgz
+[11:14:47 AM]? Do you want to continue? [Y/n] ls
+[11:14:57 AM]Y
+[11:14:58 AM]ERROR: This version of pnpm requires at least Node.js v22.13
+[11:14:58 AM]The current version of Node.js is v19.9.0
+[11:14:58 AM]Visit https://r.pnpm.io/comp to see the list of past pnpm versions with respective Node.js version support.
+[11:14:59 AM]Server marked as offline
+[11:15:00 AM][Wispbyte]: ---------- Detected server process in a crashed state! ----------
+[11:15:00 AM][Wispbyte]: Exit code: 1
+[11:15:00 AM][Wispbyte]: Out of memory: false
+[11:15:00 AM][Wispbyte]: Checking server disk space usage, this could take a few seconds...
+[11:15:00 AM][Wispbyte]: Updating process configuration files...
+[11:15:00 AM][Wispbyte]: Ensuring file permissions are set correctly, this could take a few seconds...
+[11:15:01 AM]Server marked as starting
+ __        ___           _           _       
+ \ \      / (_)___ _ __ | |__  _   _| |_ ___ 
+  \ \ /\ / /| / __| '_ \| '_ \| | | | __/ _ \
+   \ V  V / | \__ \ |_) | |_) | |_| | ||  __/
+    \_/\_/  |_|___/ .__/|_.__/ \__, |\__\___|
+                  |_|          |___/         
+Your server is currently starting! Enjoy using Wispbyte
+[11:15:04 AM][Wispbyte] : Docker image pulled successfully
+[11:15:06 AM]v19.9.0
+[11:15:06 AM]Server marked as running
+[11:15:06 AM]:/home/container$ pnpm install cd artifacts/api-server pnpm run build
+[11:15:07 AM]ERROR: This version of pnpm requires at least Node.js v22.13
+[11:15:07 AM]The current version of Node.js is v19.9.0
+[11:15:07 AM]Visit https://r.pnpm.io/comp to see the list of past pnpm versions with respective Node.js version support.
+[11:15:08 AM]Server marked as offline
+[11:15:09 AM][Wispbyte]: ---------- Detected server process in a crashed state! ----------
+[11:15:09 AM][Wispbyte]: Exit code: 1
+[11:15:09 AM][Wispbyte]: Out of memory: false
+[11:15:09 AM][Wispbyte]: Aborting automatic restart, last crash occurred less than 60 seconds ago.
