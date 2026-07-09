@@ -450,6 +450,55 @@ interface ActiveAutoPublish {
 const pendingAutoPublishes = new Map<string, PendingAutoPublish>();
 const activeAutoPublishes  = new Map<string, ActiveAutoPublish>();
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  Auto Lines — تلقائي للخطوط
+//
+//  Flow:
+//    1. المستخدم يضغط زرار "سعر تلقائي للخطوط"
+//       • معندوش متجر → نفس الرسالة (إمبيد السعر بس)
+//       • عنده متجر   → إمبيد السعر + أمر تحويل في روم الأوامر
+//    2. ProBot يأكد الدفع → البوت يطلب الصورة في روم المتجر
+//    3. المستخدم يبعت الصورة → البوت يحفظها
+//    4. بعد كل رسالة من الأونر أو الشريك في الروم → البوت يبعت الصورة
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** سعر خدمة تلقائي للخطوط */
+const AUTO_LINES_PRICE = 10_000_000;
+
+/** مهلة انتظار الصورة بعد تأكيد الدفع */
+const AUTO_LINES_IMAGE_TIMEOUT_MS = 10 * 60 * 1000; // 10 دقايق
+
+interface PendingAutoLinePurchase {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  netPrice:      number;
+  transferAmt:   number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+interface PendingAutoLineImage {
+  userId:        string;
+  purchaseId:    number;
+  roomChannelId: string;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+interface ActiveAutoLines {
+  ownerId:       string;
+  roomChannelId: string;
+  imageName:     string;
+  /** الصورة محفوظة كـ Buffer في الذاكرة — مش رابط CDN (روابط Discord بتنتهي صلاحيتها) */
+  imageBuffer:   Buffer;
+}
+
+const pendingAutoLinePurchases = new Map<string, PendingAutoLinePurchase>();
+const pendingAutoLineImages    = new Map<string, PendingAutoLineImage>();
+const activeAutoLines          = new Map<string, ActiveAutoLines>();
+
 /**
  * يبدأ النشر التلقائي في روم العميل كل 6 ساعات طول المدة المدفوعة.
  * لو المستخدم اختار منشنات، البوت بيخصمها من رصيده كل نشرة.
@@ -2050,6 +2099,46 @@ client.on(Events.MessageCreate, async (message: Message) => {
             logger.info({ userId: matchedAutoPublish.userId, days: matchedAutoPublish.days }, "Auto publish payment confirmed — awaiting mention choice");
             return;
           }
+
+          // ── 8. تحقق من دفع تلقائي للخطوط معلق ─────────────────────────
+          let matchedAutoLines: PendingAutoLinePurchase | undefined;
+          if (mentionIds.length > 0) {
+            matchedAutoLines = mentionIds
+              .map((id) => pendingAutoLinePurchases.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+
+          if (matchedAutoLines) {
+            clearTimeout(matchedAutoLines.timeoutId);
+            pendingAutoLinePurchases.delete(matchedAutoLines.userId);
+
+            // طلب الصورة في روم المتجر
+            if (matchedAutoLines.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedAutoLines.roomChannelId) as TextChannel | undefined;
+              if (roomCh) {
+                const alTimeout = setTimeout(() => {
+                  pendingAutoLineImages.delete(matchedAutoLines!.userId);
+                  roomCh.send(`⏰ <@${matchedAutoLines!.userId}> انتهت المهلة — ابعت الصورة تاني لو عايز تفعّل الخدمة.`).catch(() => {});
+                }, AUTO_LINES_IMAGE_TIMEOUT_MS);
+
+                pendingAutoLineImages.set(matchedAutoLines.userId, {
+                  userId:        matchedAutoLines.userId,
+                  purchaseId:    matchedAutoLines.purchaseId,
+                  roomChannelId: matchedAutoLines.roomChannelId,
+                  timeoutId:     alTimeout,
+                });
+
+                await roomCh.send(
+                  `✅ <@${matchedAutoLines.userId}> تم تأكيد الدفع! 🎉\n` +
+                  `ابعتلي الصورة اللي عايزها تتبعت بعد كل رسالة في متجرك 👇\n` +
+                  `*(عندك 10 دقايق)*`
+                ).catch(() => {});
+              }
+            }
+
+            logger.info({ userId: matchedAutoLines.userId }, "Auto lines payment confirmed — awaiting image");
+            return;
+          }
         }
 
         // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
@@ -2283,6 +2372,43 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
   if (isRoomChannel) {
 
+    // ── تلقائي للخطوط: استقبال الصورة لو في انتظار ────────────────────────
+    const pendingImg = pendingAutoLineImages.get(userId);
+    if (pendingImg && pendingImg.roomChannelId === channel.id) {
+      const attachment = message.attachments.first();
+      if (attachment) {
+        clearTimeout(pendingImg.timeoutId);
+        pendingAutoLineImages.delete(userId);
+
+        // حمّل الصورة كـ Buffer — مش رابط CDN (بيتنهي صلاحيته)
+        let imageBuffer: Buffer;
+        try {
+          const res = await fetch(attachment.url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          imageBuffer = Buffer.from(await res.arrayBuffer());
+        } catch (err) {
+          logger.warn({ err, userId }, "Failed to download auto_lines image");
+          await channel.send(`❌ <@${userId}> فشل تحميل الصورة، ابعتها تاني.`).catch(() => {});
+          // أعد تفعيل الانتظار
+          const retryTimeout = setTimeout(() => { pendingAutoLineImages.delete(userId); }, AUTO_LINES_IMAGE_TIMEOUT_MS);
+          pendingAutoLineImages.set(userId, { ...pendingImg, timeoutId: retryTimeout });
+          return;
+        }
+
+        activeAutoLines.set(userId, {
+          ownerId:       userId,
+          roomChannelId: pendingImg.roomChannelId,
+          imageName:     attachment.name,
+          imageBuffer,
+        });
+
+        await channel.send(
+          `✅ <@${userId}> تمام! البوت هيبعت الصورة دي بعد كل رسالة تنزل من انت أو شريكك في المتجر. 🖼️`
+        ).catch(() => {});
+        return;
+      }
+    }
+
     // ── انتظار منشن الشريك بعد تأكيد الدفع ──────────────────────────────
     const awaitingMention = awaitingPartnerMention.get(userId);
     if (awaitingMention && awaitingMention.roomChannelId === channel.id) {
@@ -2457,6 +2583,20 @@ client.on(Events.MessageCreate, async (message: Message) => {
         }
       }
       // الأدمن: مفيش خصم ولا إشعار
+    }
+
+    // ── تلقائي للخطوط: إرسال الصورة بعد كل رسالة من الأونر أو الشريك ─────
+    // NOTE: الفحص بيتم في آخر الـ isRoomChannel block بعد كل مودريشن
+    //       يعني الرسائل اللي اتحذفت مش هيتبعت بعدها صورة
+    const ownerAutoLines = activeAutoLines.get(roomPurchase!.ownerId);
+    if (ownerAutoLines) {
+      const isRoomOwner   = userId === roomPurchase!.ownerId;
+      const isRoomPartner = roomPurchase!.partnerDiscordUserId != null && userId === roomPurchase!.partnerDiscordUserId;
+      if (isRoomOwner || isRoomPartner) {
+        await channel.send({
+          files: [new AttachmentBuilder(ownerAutoLines.imageBuffer, { name: ownerAutoLines.imageName })],
+        }).catch(() => {});
+      }
     }
   }
 
@@ -3188,6 +3328,76 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       });
 
       await interaction.editReply({ content: `✅ افتحت لك تذكرة في <#${ticketChannel.id}> — اختار المدة من هناك!` });
+      return;
+    }
+
+    // ── حالة خاصة: تلقائي للخطوط ─────────────────────────────────────────────
+    if (key === "auto_lines") {
+      const userId    = interaction.user.id;
+      const username  = interaction.user.username;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      const transferAmt = calcTransferAmount(AUTO_LINES_PRICE);
+      const DIV_AL      = "ـﮩ════════════════ﮩـ";
+      const gIAL        = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+      const alEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAL })
+        .setTitle("✍️ تلقائي للخطوط")
+        .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_AL}`)
+        .setColor(0xf39c12)
+        .addFields(
+          {
+            name:  `${STAR_EMOJI} الخدمة`,
+            value: `> 🖼️ البوت يبعت صورة خطك تلقائياً بعد كل رسالة تنزلها انت أو شريكك في الروم\n> ${DIV_AL}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} السعر`,
+            value: `> ${MONEY_EMOJI} **${AUTO_LINES_PRICE.toLocaleString()}** كريدت\n> ${DIV_AL}`,
+            inline: false,
+          },
+          ...(userStore
+            ? [{
+                name:  `${STAR_EMOJI} للتفعيل`,
+                value: `> حوّل في روم الأوامر وانتظر تأكيد البوت 👇\n\`\`\`C <@${OWNER_ID}> ${transferAmt}\`\`\`\n> ${DIV_AL}`,
+                inline: false,
+              }]
+            : [{
+                name:  `${STAR_EMOJI} ملاحظة`,
+                value: `> لازم يكون عندك متجر عشان تقدر تفعّل الخدمة دي\n> ${DIV_AL}`,
+                inline: false,
+              }]),
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAL });
+
+      const alFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        alFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        alEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      // لو عنده متجر → سجّل طلب الدفع المعلق
+      if (userStore) {
+        if (pendingAutoLinePurchases.has(userId)) clearTimeout(pendingAutoLinePurchases.get(userId)!.timeoutId);
+        const alExpiresAt = Date.now() + 10 * 60 * 1000;
+        const alTimeoutId = setTimeout(() => { pendingAutoLinePurchases.delete(userId); }, 10 * 60 * 1000);
+        pendingAutoLinePurchases.set(userId, {
+          userId,
+          username,
+          purchaseId:    userStore.id,
+          roomChannelId: userStore.discordRoomId ?? "",
+          netPrice:      AUTO_LINES_PRICE,
+          transferAmt,
+          guildId:       interaction.guildId ?? "",
+          expiresAt:     alExpiresAt,
+          timeoutId:     alTimeoutId,
+        });
+      }
+
+      await interaction.editReply({ embeds: [alEmbed], files: alFiles });
       return;
     }
 
