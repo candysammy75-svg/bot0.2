@@ -3196,11 +3196,20 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      // ── أزرار الشراء (تنزل في نفس الشانل اللي ضغط فيه اليوزر) ──────────
+      // ── أزرار الشراء — كل زرار يفتح flow الإعلان المباشر ───────────────
       const buyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId("auctype_everyone").setLabel("@everyone").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("auctype_here").setLabel("@here").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("auctype_offers").setLabel("@offers").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("buy_auc_mention_everyone")
+          .setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone — ${calcTransferAmount(AUCTION_TYPES.everyone.price).toLocaleString()} كريدت`)
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("buy_auc_mention_here")
+          .setLabel(`${AUCTION_TYPES.here.emoji} @here — ${calcTransferAmount(AUCTION_TYPES.here.price).toLocaleString()} كريدت`)
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("buy_auc_mention_offers")
+          .setLabel(`${AUCTION_TYPES.offers.emoji} @offers — ${calcTransferAmount(AUCTION_TYPES.offers.price).toLocaleString()} كريدت`)
+          .setStyle(ButtonStyle.Primary),
       );
 
       // الأسعار + أزرار الشراء → نفس الشانل اللي ضغط فيه (رد عادي مش ephemeral)
@@ -3752,57 +3761,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         embeds:     [rpEmbed],
         files:      rpFiles,
         components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payRpBtn)],
-      });
-      return;
-    }
-
-    // ── حالة خاصة: منشنات إعلانات المزاد (mention_*_auction / mention_auction) ──
-    const AUC_MENTION_ADDON: Record<string, AuctionType> = {
-      mention_everyone_auction: "everyone",
-      mention_here_auction:     "here",
-      mention_auction:          "offers",
-    };
-
-    if (key in AUC_MENTION_ADDON) {
-      const mType    = AUC_MENTION_ADDON[key]!;
-      const typeCfg  = AUCTION_TYPES[mType];
-      const gIAM     = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-      const DIV_AM   = "ـﮩ════════════════ﮩـ";
-
-      const amEmbed = new EmbedBuilder()
-        .setAuthor({ name: "Dragon $hop", iconURL: gIAM })
-        .setTitle(`${typeCfg.emoji} منشن إعلان مزاد — ${typeCfg.label}`)
-        .setDescription(`<@${interaction.user.id}> ${MONEY_EMOJI}\n> ${DIV_AM}`)
-        .setColor(0xffd700)
-        .addFields(
-          {
-            name:  `${STAR_EMOJI} ما هو الإعلان؟`,
-            value: `> البوت يمنشن **${typeCfg.label}** في روم المزاد المحدد في الساعة المحددة مع سعر البيع بتاعك\n> ${DIV_AM}`,
-            inline: false,
-          },
-          {
-            name:  `${STAR_EMOJI} السعر (شامل عمولة 5%)`,
-            value: `> ${MONEY_EMOJI} **${calcTransferAmount(typeCfg.price).toLocaleString()}** كريدت\n> ${DIV_AM}`,
-            inline: false,
-          },
-        )
-        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAM });
-
-      const amFiles: AttachmentBuilder[] = [];
-      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-        amFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
-        amEmbed.setImage("attachment://dragon_text_banner.webp");
-      }
-
-      const buyAmBtn = new ButtonBuilder()
-        .setCustomId(`buy_auc_mention_${mType}`)
-        .setLabel(`🛒 شراء منشن إعلان ${typeCfg.label}`)
-        .setStyle(ButtonStyle.Primary);
-
-      await interaction.editReply({
-        embeds:     [amEmbed],
-        files:      amFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyAmBtn)],
       });
       return;
     }
