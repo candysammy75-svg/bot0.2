@@ -3382,14 +3382,18 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     // ── حالة خاصة: تلقائي للخطوط ─────────────────────────────────────────────
     if (key === "auto_lines") {
       const userId    = interaction.user.id;
-      const username  = interaction.user.username;
       const userStore = await db.select().from(purchasesTable)
         .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
         .then((rows) => rows.find((p) => p.discordRoomId));
 
-      const transferAmt = calcTransferAmount(AUTO_LINES_PRICE);
-      const DIV_AL      = "ـﮩ════════════════ﮩـ";
-      const gIAL        = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      // معندوش متجر → رسالة مباشرة
+      if (!userStore) {
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
+        return;
+      }
+
+      const DIV_AL = "ـﮩ════════════════ﮩـ";
+      const gIAL   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
       const alEmbed = new EmbedBuilder()
         .setAuthor({ name: "Dragon $hop", iconURL: gIAL })
@@ -3407,17 +3411,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
             value: `> ${MONEY_EMOJI} **${AUTO_LINES_PRICE.toLocaleString()}** كريدت\n> ${DIV_AL}`,
             inline: false,
           },
-          ...(userStore
-            ? [{
-                name:  `${STAR_EMOJI} للتفعيل`,
-                value: `> حوّل في روم الأوامر وانتظر تأكيد البوت 👇\n\`\`\`C <@${OWNER_ID}> ${transferAmt}\`\`\`\n> ${DIV_AL}`,
-                inline: false,
-              }]
-            : [{
-                name:  `${STAR_EMOJI} ملاحظة`,
-                value: `> لازم يكون عندك متجر عشان تقدر تفعّل الخدمة دي\n> ${DIV_AL}`,
-                inline: false,
-              }]),
         )
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAL });
 
@@ -3427,25 +3420,16 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         alEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      // لو عنده متجر → سجّل طلب الدفع المعلق
-      if (userStore) {
-        if (pendingAutoLinePurchases.has(userId)) clearTimeout(pendingAutoLinePurchases.get(userId)!.timeoutId);
-        const alExpiresAt = Date.now() + 10 * 60 * 1000;
-        const alTimeoutId = setTimeout(() => { pendingAutoLinePurchases.delete(userId); }, 10 * 60 * 1000);
-        pendingAutoLinePurchases.set(userId, {
-          userId,
-          username,
-          purchaseId:    userStore.id,
-          roomChannelId: userStore.discordRoomId ?? "",
-          netPrice:      AUTO_LINES_PRICE,
-          transferAmt,
-          guildId:       interaction.guildId ?? "",
-          expiresAt:     alExpiresAt,
-          timeoutId:     alTimeoutId,
-        });
-      }
+      const buyAlBtn = new ButtonBuilder()
+        .setCustomId(`pay_auto_lines_${userStore.id}`)
+        .setLabel("🖼️ شراء تلقائي للخطوط")
+        .setStyle(ButtonStyle.Primary);
 
-      await interaction.editReply({ embeds: [alEmbed], files: alFiles });
+      await interaction.editReply({
+        embeds:     [alEmbed],
+        files:      alFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyAlBtn)],
+      });
       return;
     }
 
@@ -4569,6 +4553,72 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRPB });
 
     await interaction.editReply({ embeds: [rpPayEmbed] });
+    return;
+  }
+
+  // ── زرار دفع تلقائي للخطوط (pay_auto_lines_*) ───────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pay_auto_lines_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("pay_auto_lines_", ""), 10);
+    const userId     = interaction.user.id;
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(
+        eq(purchasesTable.id, purchaseId),
+        eq(purchasesTable.discordUserId, userId),
+        eq(purchasesTable.status, "completed"),
+      ))
+      .then((r) => r[0]);
+
+    if (!purchase || !purchase.discordRoomId) {
+      await interaction.editReply({ content: "❌ مش لاقي المتجر ده." });
+      return;
+    }
+    if (pendingAutoLinePurchases.has(userId)) {
+      await interaction.editReply({ content: "⏳ عندك عملية تلقائي للخطوط لسه شغّالة." });
+      return;
+    }
+
+    const alGross   = calcTransferAmount(AUTO_LINES_PRICE);
+    const cmd       = `C <@${OWNER_ID}> ${alGross}`;
+    const expiresAt = Date.now() + 10 * 60 * 1000;
+    const timeoutId = setTimeout(() => { pendingAutoLinePurchases.delete(userId); }, 10 * 60 * 1000);
+
+    pendingAutoLinePurchases.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId,
+      netPrice:      AUTO_LINES_PRICE,
+      transferAmt:   alGross,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    // منشن في روم الأوامر مع أمر التحويل
+    const alChannel = interaction.guild?.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined;
+    if (alChannel) {
+      await alChannel.send(
+        `<@${userId}> لتفعيل تلقائي للخطوط حوّل المبلغ التالي:\n\`\`\`${cmd}\`\`\``
+      ).catch(() => {});
+    }
+
+    const DIV_ALB = "ـﮩ════════════════ﮩـ";
+    const gIALB   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const alPayEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIALB })
+      .setTitle("✍️ تلقائي للخطوط")
+      .setDescription(
+        `<@${userId}>\n> ${DIV_ALB}\n\n` +
+        `\`\`\`${cmd}\`\`\`\n` +
+        `> ${MONEY_EMOJI} **${alGross.toLocaleString()}** كريدت\n` +
+        `> ⏳ عندك **10 دقايق** تحول فيهم\n> ${DIV_ALB}`
+      )
+      .setColor(0xf39c12)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIALB });
+
+    await interaction.editReply({ embeds: [alPayEmbed] });
     return;
   }
 
