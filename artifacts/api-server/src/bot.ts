@@ -1549,16 +1549,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingMentionPurchases.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedMention) {
-            const mentionCandidates = [...pendingMentionPurchases.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (mentionCandidates.length === 1) {
-              matchedMention = mentionCandidates[0];
-              logger.warn({ userId: matchedMention.userId, paid }, "Mention matched by amount only — single candidate");
-            } else if (mentionCandidates.length > 1) {
-              logger.warn({ paid, candidateCount: mentionCandidates.length }, "Mention amount ambiguous — skipping mention check");
-            }
+          if (!matchedMention && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute mention purchase, skipping");
           }
 
           if (matchedMention) {
@@ -1609,16 +1601,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingStoreRenames.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedRename) {
-            const renameCandidates = [...pendingStoreRenames.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (renameCandidates.length === 1) {
-              matchedRename = renameCandidates[0];
-              logger.warn({ userId: matchedRename.userId, paid }, "Store rename matched by amount only — single candidate");
-            } else if (renameCandidates.length > 1) {
-              logger.warn({ paid, candidateCount: renameCandidates.length }, "Store rename amount ambiguous");
-            }
+          if (!matchedRename && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute store rename, skipping");
           }
 
           if (matchedRename) {
@@ -1665,11 +1649,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingWarningRemovals.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedWarningRemoval) {
-            const wrCandidates = [...pendingWarningRemovals.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (wrCandidates.length === 1) matchedWarningRemoval = wrCandidates[0];
+          if (!matchedWarningRemoval && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute warning removal, skipping");
           }
 
           if (matchedWarningRemoval) {
@@ -1734,11 +1715,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingRoomReactivations.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedReactivation) {
-            const reactCandidates = [...pendingRoomReactivations.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (reactCandidates.length === 1) matchedReactivation = reactCandidates[0];
+          if (!matchedReactivation && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute room reactivation, skipping");
           }
 
           if (matchedReactivation) {
@@ -1793,11 +1771,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingAddPartners.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedAddPartner) {
-            const apCandidates = [...pendingAddPartners.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (apCandidates.length === 1) matchedAddPartner = apCandidates[0];
+          if (!matchedAddPartner && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute add-partner, skipping");
           }
 
           if (matchedAddPartner) {
@@ -1836,11 +1811,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .map((id) => pendingRemovePartners.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedRemovePartner) {
-            const rpCandidates = [...pendingRemovePartners.values()].filter(
-              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
-            );
-            if (rpCandidates.length === 1) matchedRemovePartner = rpCandidates[0];
+          if (!matchedRemovePartner && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute remove-partner, skipping");
           }
 
           if (matchedRemovePartner) {
