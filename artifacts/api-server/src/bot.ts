@@ -447,6 +447,12 @@ interface ActiveAutoPublish {
 const pendingAutoPublishes = new Map<string, PendingAutoPublish>();
 const activeAutoPublishes  = new Map<string, ActiveAutoPublish>();
 
+/**
+ * تفويض دفعة واحدة (single-use) بين لحظة تأكيد الدفع وضغط زرار المنشنات/فتح المودال.
+ * بيتحذف أول ما يُستخدم عشان لا يُعاد استخدام نفس الزرار/المودال القديم بعد كده من غير دفع جديد.
+ */
+const pendingAutoPublishReady = new Map<string, { storePurchaseId: number; days: number; roomChannelId: string }>();
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  Auto Lines — تلقائي للخطوط
 //
@@ -543,6 +549,19 @@ async function startAutoPublish(
     durationMs:      number;
   },
 ): Promise<void> {
+  // ── لو فيه جوب شغّال لنفس اليوزر (احتياطي) — قفله الأول عشان ما يفضلش interval/webhook متسرّب ──
+  const existing = activeAutoPublishes.get(params.userId);
+  if (existing) {
+    clearInterval(existing.intervalId);
+    clearTimeout(existing.endTimeoutId);
+    if (existing.webhookClient) {
+      await existing.webhookClient.delete().catch(() => {});
+      existing.webhookClient.destroy();
+    }
+    activeAutoPublishes.delete(params.userId);
+    logger.warn({ userId: params.userId }, "Replaced an existing active auto-publish job before starting a new one");
+  }
+
   // ── إنشاء webhook مخصص للنشر ──────────────────────────────────────────────
   const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
   let webhookClient: WebhookClient | null = null;
@@ -2276,6 +2295,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
                 inline: false,
               })
               .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAPP });
+
+            pendingAutoPublishReady.set(matchedAutoPublish.userId, {
+              storePurchaseId: matchedAutoPublish.storePurchaseId,
+              days:            matchedAutoPublish.days,
+              roomChannelId:   matchedAutoPublish.roomChannelId,
+            });
 
             const yesBtn = new ButtonBuilder()
               .setCustomId(`autopub_mention_yes_${matchedAutoPublish.userId}_${matchedAutoPublish.storePurchaseId}_${matchedAutoPublish.days}_${matchedAutoPublish.roomChannelId}`)
@@ -5829,6 +5854,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     // format: autopub_mention_yes_{userId}_{purchaseId}_{days}_{roomChannelId}
     const parts         = interaction.customId.replace("autopub_mention_yes_", "").split("_");
     const userId        = parts[0]!;
+    const purchaseId    = parseInt(parts[1]!, 10);
     const days          = parseInt(parts[2]!, 10);
     const roomChannelId = parts.slice(3).join("_");
 
@@ -5837,8 +5863,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // تأكد إن ده لسه تفويض صالح من دفعة حديثة — يمنع إعادة استخدام زرار قديم بدون دفع جديد
+    const ready = pendingAutoPublishReady.get(userId);
+    if (!ready || ready.storePurchaseId !== purchaseId) {
+      await interaction.reply({ content: "❌ انتهت صلاحية هذا الزرار أو العملية اتستخدمت قبل كده.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     const modal = new ModalBuilder()
-      .setCustomId(`modal_autopub_yes_${userId}_${days}_${roomChannelId}`)
+      .setCustomId(`modal_autopub_yes_${userId}_${purchaseId}_${days}_${roomChannelId}`)
       .setTitle("📢 تفاصيل النشر التلقائي");
 
     const mentionTypeInput = new TextInputBuilder()
@@ -5888,6 +5921,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith("autopub_mention_no_")) {
     const parts         = interaction.customId.replace("autopub_mention_no_", "").split("_");
     const userId        = parts[0]!;
+    const purchaseId    = parseInt(parts[1]!, 10);
     const days          = parseInt(parts[2]!, 10);
     const roomChannelId = parts.slice(3).join("_");
 
@@ -5896,8 +5930,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // تأكد إن ده لسه تفويض صالح من دفعة حديثة — يمنع إعادة استخدام زرار قديم بدون دفع جديد
+    const ready = pendingAutoPublishReady.get(userId);
+    if (!ready || ready.storePurchaseId !== purchaseId) {
+      await interaction.reply({ content: "❌ انتهت صلاحية هذا الزرار أو العملية اتستخدمت قبل كده.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
     const modal = new ModalBuilder()
-      .setCustomId(`modal_autopub_no_${userId}_${days}_${roomChannelId}`)
+      .setCustomId(`modal_autopub_no_${userId}_${purchaseId}_${days}_${roomChannelId}`)
       .setTitle("📢 رسالة النشر التلقائي");
 
     const messageInput = new TextInputBuilder()
@@ -5928,12 +5969,23 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   // ── مودال النشر التلقائي مع منشنات (modal_autopub_yes_*) ─────────────────
   if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_autopub_yes_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const rest          = interaction.customId.replace("modal_autopub_yes_", "");
+    // format: modal_autopub_yes_{userId}_{purchaseId}_{days}_{roomChannelId}
+    const rest             = interaction.customId.replace("modal_autopub_yes_", "");
     const firstUnderscore  = rest.indexOf("_");
     const secondUnderscore = rest.indexOf("_", firstUnderscore + 1);
-    const userId        = rest.slice(0, firstUnderscore);
-    const days          = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
-    const roomChannelId = rest.slice(secondUnderscore + 1);
+    const thirdUnderscore  = rest.indexOf("_", secondUnderscore + 1);
+    const userId           = rest.slice(0, firstUnderscore);
+    const purchaseId       = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
+    const days             = parseInt(rest.slice(secondUnderscore + 1, thirdUnderscore), 10);
+    const roomChannelId    = rest.slice(thirdUnderscore + 1);
+
+    // تأكد إن التفويض لسه صالح ولسه ما اتستخدمش، وبعدين استهلكه
+    const ready = pendingAutoPublishReady.get(userId);
+    if (!ready || ready.storePurchaseId !== purchaseId) {
+      await interaction.editReply({ content: "❌ انتهت صلاحية هذه العملية. حاول من الأول." });
+      return;
+    }
+    pendingAutoPublishReady.delete(userId);
 
     const rawMentionType  = interaction.fields.getTextInputValue("mention_type").trim().toLowerCase();
     const rawMentionCount = interaction.fields.getTextInputValue("mention_count").trim();
@@ -6004,12 +6056,23 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   // ── مودال النشر التلقائي بدون منشنات (modal_autopub_no_*) ────────────────
   if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_autopub_no_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    // format: modal_autopub_no_{userId}_{purchaseId}_{days}_{roomChannelId}
     const rest             = interaction.customId.replace("modal_autopub_no_", "");
     const firstUnderscore  = rest.indexOf("_");
     const secondUnderscore = rest.indexOf("_", firstUnderscore + 1);
+    const thirdUnderscore  = rest.indexOf("_", secondUnderscore + 1);
     const userId           = rest.slice(0, firstUnderscore);
-    const days             = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
-    const roomChannelId    = rest.slice(secondUnderscore + 1);
+    const purchaseId       = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
+    const days             = parseInt(rest.slice(secondUnderscore + 1, thirdUnderscore), 10);
+    const roomChannelId    = rest.slice(thirdUnderscore + 1);
+
+    // تأكد إن التفويض لسه صالح ولسه ما اتستخدمش، وبعدين استهلكه
+    const ready = pendingAutoPublishReady.get(userId);
+    if (!ready || ready.storePurchaseId !== purchaseId) {
+      await interaction.editReply({ content: "❌ انتهت صلاحية هذه العملية. حاول من الأول." });
+      return;
+    }
+    pendingAutoPublishReady.delete(userId);
 
     const msgContent = interaction.fields.getTextInputValue("message").trim();
     const imageUrl   = interaction.fields.getTextInputValue("image_url").trim() || undefined;
