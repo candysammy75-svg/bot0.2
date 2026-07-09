@@ -2288,6 +2288,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
       }
 
       await channel.send({ embeds: [completionEmbed], files: bannerFiles });
+
+      // أغلق التكت تلقائياً بعد 5 ثواني من إنشاء الروم
+      setTimeout(() => channel.delete("Ticket closed after room creation").catch(() => {}), 5000);
     } catch (err) {
       logger.error({ err }, "Failed to create Discord room channel");
       await channel.send(`❌ حصل خطأ وقت إنشاء الروم. تواصل مع الأدمن.`);
