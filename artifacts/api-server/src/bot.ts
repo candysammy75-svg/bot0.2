@@ -3124,6 +3124,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
           .setStyle(ButtonStyle.Secondary)
       );
 
+      // سعر ثابت (مش من ADDONS/addon_prices) — بس زرار دخول لنفس الـ addoninfo_ handler
+      addonButtons.push(
+        new ButtonBuilder()
+          .setCustomId("addoninfo_change_store_name")
+          .setLabel("سعر تغيير اسم المتجر")
+          .setEmoji(PEEPO_EMOJI)
+          .setStyle(ButtonStyle.Secondary)
+      );
+
       const components: ActionRowBuilder<ButtonBuilder>[] = [];
       let idx = 0;
       for (const rowSize of ADDON_ROW_SIZES) {
@@ -3289,16 +3298,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   // ── زرار سعر إضافة (addoninfo_*) ────────────────────────────────────────
   if (interaction.isButton() && interaction.customId.startsWith("addoninfo_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const key   = interaction.customId.replace("addoninfo_", "") as AddonKey;
-    const addon = ADDONS.find((a) => a.key === key);
+    const rawKey = interaction.customId.replace("addoninfo_", "");
 
-    if (!addon) {
-      await interaction.editReply({ content: "❌ الإضافة مش موجودة." });
-      return;
-    }
-
-    // ── حالة خاصة: تغيير اسم المتجر ─────────────────────────────────────────
-    if (key === "change_store_name") {
+    // ── حالة خاصة: تغيير اسم المتجر (سعر ثابت، مش من ADDONS/addon_prices) ────
+    if (rawKey === "change_store_name") {
       const userId = interaction.user.id;
 
       // تحقق من وجود متجر للمستخدم (completed purchase + discordRoomId)
@@ -3353,6 +3356,14 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         files:      sFiles,
         components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyRenameBtn)],
       });
+      return;
+    }
+
+    const key   = rawKey as AddonKey;
+    const addon = ADDONS.find((a) => a.key === key);
+
+    if (!addon) {
+      await interaction.editReply({ content: "❌ الإضافة مش موجودة." });
       return;
     }
 
@@ -5340,7 +5351,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   // ══════════════════════════════════════════════════════════════════════════
   //  SLASH COMMANDS
   // ══════════════════════════════════════════════════════════════════════════
-  if (!interaction.isChatInputCommand()) return;
+  if (interaction.isChatInputCommand()) {
 
   // ── /shop ─────────────────────────────────────────────────────────────────
   if (interaction.commandName === "shop") {
@@ -5753,6 +5764,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         : `✅ تم تحذير <@${targetUser.id}> — تحذير **${newWarningCount}/3**.`,
     });
   }
+
+  } // end isChatInputCommand block
 
   // ── StringSelectMenu: اختيار مدة النشر التلقائي (autopub_duration_*) ───────
   if (interaction.isStringSelectMenu() && interaction.customId.startsWith("autopub_duration_")) {
