@@ -153,46 +153,42 @@ const PEEPO_EMOJI = {
  *   عشان كده الترتيب في الكود معكوس تماماً عن الترتيب اللي عايزه على الشاشة:
  *   لو عايز الشاشة تبان هكذا:  [A] [B] [C] [D] [E]
  *   الكود لازم يكون بالترتيب:  [E] [D] [C] [B] [A]
+ *   (أول عنصر في الـ array يظهر على اليمين في Discord)
  *
- *   الترتيب الحالي:
- *   Row 1 (شاشة): إزالة شريك | شريك | إضافة شريك | منشن شوب | منشن هير
- *   Row 2 (شاشة): تغيير مالك | تغيير نوع | تغيير إيموجي | تفعيل | تغيير اسم
- *   Row 3 (شاشة): منشن هير مزاد | منشن إيفري مزاد | منشن طلبات | منشن هير طلبات | منشن إيفري طلبات
- *   Row 4 (شاشة): منشن مزاد | تلقائي للخطوط | النشر التلقائي | المتجر | منشن إيفري
- *   Row 5 (شاشة): إزالة التحذير من المتجر
+ *   الترتيب الحالي (شاشة من اليسار لليمين):
+ *   Row 1 (4): منشن إيفري | منشن هير | منشن عروض | تفعيل المتجر
+ *   Row 2 (4): إضافة شريك | إزالة شريك | تغيير مالك | تغيير نوع
+ *   Row 3 (3): منشن إيفري طلبات | منشن هير طلبات | منشن طلبات
+ *   Row 4 (3): منشن إيفري مزاد | منشن هير مزاد | منشن مزادات
+ *   Row 5 (3): نشر تلقائي | خطوط تلقائيه | إزالة تحذير
  *
- *   لو احتجت تغير الترتيب: عكس الأزرار اللي في نفس الصف.
- *   كل 5 عناصر = صف واحد (ActionRow).
+ *   ADDON_ROW_SIZES يحدد عدد الأزرار في كل صف.
  */
+const ADDON_ROW_SIZES = [4, 4, 3, 3, 3] as const;
+
 const ADDONS = [
-  // ── Row 1 ─────────────────────────────────────────────────────────────────
-  // شاشة: [إزالة شريك] [إضافة شريك] [منشن شوب] [منشن هير]
-  { key: "mention_here",              label: "سعر منشن هير" },            // يظهر يمين الصف
-  { key: "mention_shop",              label: "سعر منشن شوب" },
-  { key: "add_partner",               label: "سعر إضافة شريك" },
-  { key: "remove_partner",            label: "سعر إزالة شريك" },          // يظهر يسار الصف
-  // ── Row 2 ─────────────────────────────────────────────────────────────────
-  // شاشة: [تغيير مالك] [تغيير نوع] [تفعيل] [تغيير اسم]
-  { key: "change_store_name",         label: "سعر تغيير اسم المتجر" },    // يمين
-  { key: "activate_store",            label: "سعر تفعيل المتجر" },
-  { key: "change_store_type",         label: "سعر تغيير نوع المتجر" },
-  { key: "change_store_owner",        label: "سعر تغيير مالك المتجر" },   // يسار
-  // ── Row 3 ─────────────────────────────────────────────────────────────────
-  // شاشة: [منشن هير مزاد] [منشن إيفري مزاد] [منشن طلبات] [منشن هير طلبات] [منشن إيفري طلبات]
-  { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },    // يمين
-  { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
-  { key: "mention_requests",          label: "سعر منشن طلبات" },
-  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },
-  { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },       // يسار
-  // ── Row 4 ─────────────────────────────────────────────────────────────────
-  // شاشة: [منشن مزاد] [تلقائي للخطوط] [النشر التلقائي] [المتجر] [منشن إيفري]
+  // ── Row 1 (شاشة L→R: منشن إيفري | منشن هير | منشن عروض | تفعيل المتجر) ──
+  { key: "activate_store",            label: "سعر تفعيل المتجر" },        // يسار
+  { key: "mention_shop",              label: "سعر منشن عروض" },
+  { key: "mention_here",              label: "سعر منشن هير" },
   { key: "mention_everyone",          label: "سعر منشن إيفري" },          // يمين
-  { key: "auto_publish",              label: "سعر النشر التلقائي" },
-  { key: "auto_lines",                label: "سعر خط تلقائي" },
-  { key: "mention_auction",           label: "سعر منشن مزاد" },           // يسار
-  // ── Row 5 ─────────────────────────────────────────────────────────────────
-  // صف وحيد (زرار واحد)
-  { key: "remove_store_warning",      label: "سعر إزالة التحذير من المتجر" },
+  // ── Row 2 (شاشة L→R: إضافة شريك | إزالة شريك | تغيير مالك | تغيير نوع) ──
+  { key: "change_store_type",         label: "سعر تغيير نوع المتجر" },    // يسار
+  { key: "change_store_owner",        label: "سعر تغيير مالك المتجر" },
+  { key: "remove_partner",            label: "سعر إزالة شريك" },
+  { key: "add_partner",               label: "سعر إضافة شريك" },          // يمين
+  // ── Row 3 (شاشة L→R: منشن إيفري طلبات | منشن هير طلبات | منشن طلبات) ───
+  { key: "mention_requests",          label: "سعر منشن طلبات" },          // يسار
+  { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
+  { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },    // يمين
+  // ── Row 4 (شاشة L→R: منشن إيفري مزاد | منشن هير مزاد | منشن مزادات) ───
+  { key: "mention_auction",           label: "سعر منشن مزادات" },         // يسار
+  { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },
+  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },     // يمين
+  // ── Row 5 (شاشة L→R: نشر تلقائي | خطوط تلقائيه | إزالة تحذير) ─────────
+  { key: "remove_store_warning",      label: "سعر إزالة تحذير" },         // يسار
+  { key: "auto_lines",                label: "سعر خطوط تلقائيه" },
+  { key: "auto_publish",              label: "سعر نشر تلقائي" },          // يمين
 ] as const;
 
 /** نوع TypeScript المشتق تلقائياً من مفاتيح الإضافات — بيستخدم في /setaddonprice */
@@ -2907,10 +2903,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       );
 
       const components: ActionRowBuilder<ButtonBuilder>[] = [];
-      for (let i = 0; i < addonButtons.length; i += 5) {
-        components.push(
-          new ActionRowBuilder<ButtonBuilder>().addComponents(...addonButtons.slice(i, i + 5))
-        );
+      let idx = 0;
+      for (const rowSize of ADDON_ROW_SIZES) {
+        const slice = addonButtons.slice(idx, idx + rowSize);
+        if (slice.length > 0) components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...slice));
+        idx += rowSize;
       }
 
       await interaction.editReply({ embeds: [embed], files, components });
