@@ -182,9 +182,6 @@ const ADDONS = [
   { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
   { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },    // يمين
   // ── Row 4 (شاشة L→R: منشن إيفري مزاد | منشن هير مزاد | منشن مزادات) ───
-  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },     // يسار
-  { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },
-  { key: "mention_auction",           label: "سعر منشن مزادات" },         // يمين
   // ── Row 5 (شاشة L→R: نشر تلقائي | خطوط تلقائيه | إزالة تحذير) ─────────
   { key: "remove_store_warning",      label: "سعر إزالة تحذير" },         // يسار
   { key: "auto_lines",                label: "سعر خطوط تلقائيه" },
