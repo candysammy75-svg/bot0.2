@@ -182,9 +182,9 @@ const ADDONS = [
   { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
   { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },    // يمين
   // ── Row 4 (شاشة L→R: منشن إيفري مزاد | منشن هير مزاد | منشن مزادات) ───
-  { key: "mention_auction",           label: "سعر منشن مزادات" },         // يسار
+  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },     // يسار
   { key: "mention_here_auction",      label: "سعر منشن هير مزاد" },
-  { key: "mention_everyone_auction",  label: "سعر منشن إيفري مزاد" },     // يمين
+  { key: "mention_auction",           label: "سعر منشن مزادات" },         // يمين
   // ── Row 5 (شاشة L→R: نشر تلقائي | خطوط تلقائيه | إزالة تحذير) ─────────
   { key: "remove_store_warning",      label: "سعر إزالة تحذير" },         // يسار
   { key: "auto_lines",                label: "سعر خطوط تلقائيه" },
@@ -3833,9 +3833,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       roomsPerHour.set(b.scheduledHour, (roomsPerHour.get(b.scheduledHour) ?? 0) + 1);
     }
 
-    // الأوقات المتاحة: من الساعة التالية للحالية حتى 23
+    // الأوقات المتاحة: من 10 صباحاً حتى 10 مساءً (10–22) — بعد الساعة الحالية فقط
     const availableHours = Array.from({ length: 24 }, (_, i) => i)
-      .filter((h) => h > currentHour && (roomsPerHour.get(h) ?? 0) < AUCTION_ROOM_CHANNEL_IDS.length);
+      .filter((h) => h >= 10 && h <= 22 && h > currentHour && (roomsPerHour.get(h) ?? 0) < AUCTION_ROOM_CHANNEL_IDS.length);
 
     if (availableHours.length === 0) {
       await interaction.editReply({
