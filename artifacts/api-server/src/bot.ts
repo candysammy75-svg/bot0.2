@@ -2740,10 +2740,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
       if (!userStore) {
         await interaction.editReply({
-          content:
-            `❌ **مش عندك متجر!**\n\n` +
-            `لازم يكون عندك متجر عشان تقدر تغير الاسم.\n` +
-            `ادخل الشوب واشتري متجر الأول. 🏪`,
+          content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>`,
         });
         return;
       }
@@ -2842,7 +2839,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         .then((rows) => rows.find((p) => p.discordRoomId));
 
       if (!userStore) {
-        await interaction.editReply({ content: "❌ مش عندك متجر." });
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
         return;
       }
       if (!userStore.isRoomDeactivated) {
@@ -2894,7 +2891,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         .then((rows) => rows.find((p) => p.discordRoomId));
 
       if (!userStore) {
-        await interaction.editReply({ content: "❌ لازم يكون عندك متجر عشان تقدر تضيف شريك." });
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
         return;
       }
       if (userStore.partnerDiscordUserId) {
@@ -2945,7 +2942,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         .then((rows) => rows.find((p) => p.discordRoomId));
 
       if (!userStore) {
-        await interaction.editReply({ content: "❌ مش عندك متجر." });
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
         return;
       }
       if (!userStore.partnerDiscordUserId) {
