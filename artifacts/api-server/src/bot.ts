@@ -569,9 +569,19 @@ async function startAutoPublish(
 
   if (roomCh) {
     try {
+      // ── اسم وأفتار صاحب المتجر — النشر يبان بشخصيته مش شخصية السيرفر ──────────
+      const ownerMember =
+        guild.members.cache.get(params.userId) ??
+        (await guild.members.fetch(params.userId).catch(() => null));
+      const ownerName   = ownerMember?.displayName ?? params.username;
+      const ownerAvatar =
+        ownerMember?.displayAvatarURL({ extension: "png", size: 256 }) ??
+        guild.iconURL({ extension: "png", size: 256 }) ??
+        undefined;
+
       const wh = await roomCh.createWebhook({
-        name:   "Dragon $hop | النشر التلقائي",
-        avatar: guild.iconURL({ extension: "png", size: 256 }) ?? undefined,
+        name:   ownerName.slice(0, 80),
+        avatar: ownerAvatar,
         reason: `Auto publish for <@${params.userId}>`,
       });
       webhookClient = new WebhookClient({ id: wh.id, token: wh.token! });
