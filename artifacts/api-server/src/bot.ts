@@ -2264,14 +2264,19 @@ client.on(Events.MessageCreate, async (message: Message) => {
           }
 
           // ── 7. تحقق من نشر تلقائي معلق ─────────────────────────────────
-          let matchedAutoPublish: PendingAutoPublish | undefined;
-          if (mentionIds.length > 0) {
+          // NOTE: التذكرة (ticket) اللي المستخدم بيحول فيها خاصة بيه — نتحقق أولاً بالشانل
+          //       (زي باقي عمليات الشراء) لأن رسالة ProBot مش دايماً بتمنشن الشاري نفسه
+          //       (بتمنشن المستلم/الرول بس)، فالاعتماد على mentionIds لوحده ممكن يفوّت الدفعة.
+          let matchedAutoPublish: PendingAutoPublish | undefined = [...pendingAutoPublishes.values()]
+            .find((p) => p.ticketChannelId === channel.id && paid >= p.netPrice && p.guildId === message.guild!.id);
+
+          if (!matchedAutoPublish && mentionIds.length > 0) {
             matchedAutoPublish = mentionIds
               .map((id) => pendingAutoPublishes.get(id))
               .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
           }
-          if (!matchedAutoPublish && mentionIds.length === 0) {
-            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute auto publish, skipping");
+          if (!matchedAutoPublish) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer detected but no matching pending auto publish found — skipping");
           }
 
           if (matchedAutoPublish) {
