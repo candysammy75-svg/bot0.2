@@ -39,6 +39,7 @@ import {
   TextInputStyle,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
+  WebhookClient,
   type TextChannel,
   type Message,
   type Interaction,
@@ -437,14 +438,17 @@ interface PendingAutoPublish {
 }
 
 interface ActiveAutoPublish {
-  userId:         string;
-  roomChannelId:  string;
-  message:        string;
-  imageUrl?:      string;
-  mentionType?:   "here" | "everyone" | "offers";
+  userId:          string;
+  roomChannelId:   string;
+  message:         string;
+  imageUrl?:       string;
+  mentionType?:    "here" | "everyone" | "offers";
   mentionsPerPost: number;
-  intervalId:     ReturnType<typeof setInterval>;
-  endTimeoutId:   ReturnType<typeof setTimeout>;
+  intervalId:      ReturnType<typeof setInterval>;
+  endTimeoutId:    ReturnType<typeof setTimeout>;
+  /** الـ webhook المخصص لهذا النشر — null لو فشل الإنشاء */
+  webhookClient:   WebhookClient | null;
+  webhookId:       string | null;
 }
 
 const pendingAutoPublishes = new Map<string, PendingAutoPublish>();
@@ -501,6 +505,7 @@ const activeAutoLines          = new Map<string, ActiveAutoLines>();
 
 /**
  * يبدأ النشر التلقائي في روم العميل كل 6 ساعات طول المدة المدفوعة.
+ * بينشئ webhook مخصص للنشر ويمسحه لما تخلص المدة.
  * لو المستخدم اختار منشنات، البوت بيخصمها من رصيده كل نشرة.
  */
 async function startAutoPublish(
@@ -516,10 +521,31 @@ async function startAutoPublish(
     durationMs:      number;
   },
 ): Promise<void> {
+  // ── إنشاء webhook مخصص للنشر ──────────────────────────────────────────────
+  const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
+  let webhookClient: WebhookClient | null = null;
+  let webhookId:     string | null        = null;
+
+  if (roomCh) {
+    try {
+      const wh = await roomCh.createWebhook({
+        name:   "Dragon $hop | النشر التلقائي",
+        avatar: guild.iconURL({ extension: "png", size: 256 }) ?? undefined,
+        reason: `Auto publish for <@${params.userId}>`,
+      });
+      webhookClient = new WebhookClient({ id: wh.id, token: wh.token! });
+      webhookId     = wh.id;
+      logger.info({ userId: params.userId, webhookId: wh.id }, "Auto publish webhook created");
+    } catch (err) {
+      logger.warn({ err, userId: params.userId }, "Failed to create auto publish webhook — falling back to channel send");
+    }
+  }
+
+  // ── دالة النشر ─────────────────────────────────────────────────────────────
   const doPost = async () => {
     try {
-      const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
-      if (!roomCh) return;
+      const ch = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
+      if (!ch) return;
 
       let mentionText = "";
       if (params.mentionType && params.mentionsPerPost > 0) {
@@ -537,17 +563,31 @@ async function startAutoPublish(
         }
       }
 
-      if (params.imageUrl) {
-        const embed = new EmbedBuilder()
-          .setDescription(params.message)
-          .setImage(params.imageUrl)
-          .setColor(0x00bfff);
-        await roomCh.send({
+      const embed = params.imageUrl
+        ? new EmbedBuilder().setDescription(params.message).setImage(params.imageUrl).setColor(0x00bfff)
+        : null;
+
+      if (webhookClient) {
+        // النشر عبر الـ webhook (الاسم والأفاتار مخصصَيْن)
+        await webhookClient.send({
           content: mentionText || undefined,
-          embeds:  [embed],
-        }).catch(() => roomCh.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {}));
+          embeds:  embed ? [embed] : undefined,
+          ...(embed ? {} : { content: `${mentionText}\n${params.message}`.trim() }),
+        }).catch(async () => {
+          // الـ webhook اتحذف خارجياً — ارجع لإرسال عادي
+          webhookClient?.destroy();
+          webhookClient = null;
+          webhookId     = null;
+          await ch.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {});
+        });
       } else {
-        await roomCh.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {});
+        // fallback: إرسال عادي
+        if (embed) {
+          await ch.send({ content: mentionText || undefined, embeds: [embed] })
+            .catch(() => ch.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {}));
+        } else {
+          await ch.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {});
+        }
       }
     } catch { /* ignore */ }
   };
@@ -556,13 +596,19 @@ async function startAutoPublish(
   await doPost();
   const intervalId = setInterval(doPost, AUTO_PUBLISH_INTERVAL_MS);
 
-  // وقف النشر بعد المدة
+  // وقف النشر بعد المدة + حذف الـ webhook
   const endTimeoutId = setTimeout(async () => {
     clearInterval(intervalId);
     activeAutoPublishes.delete(params.userId);
+    // احذف الـ webhook
+    if (webhookClient && webhookId) {
+      await webhookClient.delete().catch(() => {});
+      webhookClient.destroy();
+      logger.info({ userId: params.userId, webhookId }, "Auto publish webhook deleted (period ended)");
+    }
     try {
-      const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
-      await roomCh?.send(`✅ <@${params.userId}> انتهت مدة النشر التلقائي لمتجرك.`);
+      const ch = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
+      await ch?.send(`✅ <@${params.userId}> انتهت مدة النشر التلقائي لمتجرك.`);
     } catch { /* ignore */ }
   }, params.durationMs);
 
@@ -575,6 +621,8 @@ async function startAutoPublish(
     mentionsPerPost: params.mentionsPerPost,
     intervalId,
     endTimeoutId,
+    webhookClient,
+    webhookId,
   });
 }
 
