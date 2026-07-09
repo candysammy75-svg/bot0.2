@@ -499,6 +499,35 @@ const pendingAutoLinePurchases = new Map<string, PendingAutoLinePurchase>();
 const pendingAutoLineImages    = new Map<string, PendingAutoLineImage>();
 const activeAutoLines          = new Map<string, ActiveAutoLines>();
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  Auction Mention Purchase — شراء منشن إعلان مزاد (In-Memory)
+//
+//  Flow:
+//    1. اليوزر يضغط زرار الإضافة (mention_*_auction)
+//    2. يضغط "شراء" → البوت يبعت embed في روم الأوامر فيه زر "أمر التحويل"
+//    3. يضغط الزر → يشوف أمر التحويل
+//    4. ProBot يأكد → البوت يبعت زر "اختار تفاصيل المزاد"
+//    5. يضغط الزر → مودال: رقم الروم + الساعة + العكلة (سعر البيع)
+//    6. يسبمت → البوت يسجّل في DB ويأكد
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface PendingAucMentionPurchase {
+  userId:      string;
+  username:    string;
+  mentionType: AuctionType;
+  netPrice:    number;
+  transferAmt: number;
+  guildId:     string;
+  expiresAt:   number;
+  timeoutId:   ReturnType<typeof setTimeout>;
+}
+
+const pendingAucMentionPurchases = new Map<string, PendingAucMentionPurchase>();
+
+// بعد تأكيد ProBot — ينتظر المستخدم يضغط زر "اختار تفاصيل المزاد"
+// NOTE: single-use token — بيتمسح بعد ما المودال يتسبمت أو بعد 10 دقايق
+const pendingAucMentionReady = new Map<string, { mentionType: AuctionType; guildId: string; timeoutId: ReturnType<typeof setTimeout> }>();
+
 /**
  * يبدأ النشر التلقائي في روم العميل كل 6 ساعات طول المدة المدفوعة.
  * بينشئ webhook مخصص للنشر ويمسحه لما تخلص المدة.
@@ -1226,16 +1255,59 @@ async function endAuction(guild: Guild, channelId: string): Promise<void> {
   const ch = guild.channels.cache.get(channelId) as TextChannel | undefined;
   if (!ch) return;
 
-  if (auction.highestBidderId) {
-    await ch.send(
-      `🎉 **انتهى المزاد!**\n` +
-      `👑 الفائز: <@${auction.highestBidderId}>\n` +
-      `💰 المبلغ الفائز: **${auction.highestBid.toLocaleString()}** كريدت\n\n` +
-      `⏳ سيتواصل معك الأدمن لإتمام الدفع وتنفيذ المزاد.`,
-    );
-  } else {
-    await ch.send(`📭 **انتهى المزاد** دون أي عروض.`);
+  const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+  const DIV_END      = "ـﮩ════════════════ﮩـ";
+  const aType        = auction.auctionType as AuctionType;
+  const typeCfg      = AUCTION_TYPES[aType];
+
+  const endEmbed = new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+  const endFiles: AttachmentBuilder[] = [];
+  if (fs.existsSync(DRAGON_BANNER_PATH)) {
+    endFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+    endEmbed.setImage("attachment://dragon_banner.webp");
   }
+
+  if (auction.highestBidderId) {
+    endEmbed
+      .setTitle("🎉 انتهى المزاد!")
+      .setColor(0x00ff88)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} الفائز`,
+          value: `> 👑 <@${auction.highestBidderId}>\n> ${DIV_END}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المبلغ الفائز`,
+          value: `> 💰 **${auction.highestBid.toLocaleString()}** كريدت\n> ${DIV_END}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} النوع`,
+          value: `> ${typeCfg?.emoji ?? ""} **${typeCfg?.label ?? aType}**\n> ${DIV_END}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} الخطوة التالية`,
+          value: `> ⏳ سيتواصل معك الأدمن لإتمام الدفع وتنفيذ المزاد\n> ${DIV_END}`,
+          inline: false,
+        },
+      );
+  } else {
+    endEmbed
+      .setTitle("📭 انتهى المزاد بدون عروض")
+      .setColor(0x888888)
+      .addFields({
+        name:  `${STAR_EMOJI} الحالة`,
+        value: `> لم يتقدم أحد بعرض في هذا المزاد\n> ${DIV_END}`,
+        inline: false,
+      });
+  }
+
+  await ch.send({ embeds: [endEmbed], files: endFiles }).catch(() => {});
 
   await db.update(auctionSchedulesTable).set({
     status:       "completed",
@@ -1270,7 +1342,7 @@ async function endAuction(guild: Guild, channelId: string): Promise<void> {
  */
 async function startAuction(
   guild: Guild,
-  schedule: { id: number; auctionType: string; discordUserId: string; roomChannelId: string },
+  schedule: { id: number; auctionType: string; discordUserId: string; roomChannelId: string; sellingPrice?: string | null },
 ): Promise<void> {
   const channelId = schedule.roomChannelId;
   const aType     = schedule.auctionType as AuctionType;
@@ -1292,16 +1364,102 @@ async function startAuction(
     aType === "everyone" ? "@everyone" :
     aType === "here"     ? "@here"     : `<@&${OFFERS_ROLE_ID}>`;
 
-  await ch.send(
-    `${typeCfg.emoji} **بدأ المزاد!**\n\n` +
-    `**النوع:** ${typeCfg.label}\n` +
-    `**المشتري:** <@${schedule.discordUserId}>\n\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `💬 اكتب سعرك (أرقام فقط) — من يكتب أعلى سعر يفوز!\n` +
-    `⏱️ المزاد ينتهي بعد **دقيقتين** من آخر عرض.\n` +
-    `━━━━━━━━━━━━━━━━━━━━\n` +
-    `${mentionText}`,
-  );
+  // ── إعلان بيع (mention-only) — بيختلف عن مزاد المزايدة ────────────────
+  if (schedule.sellingPrice) {
+    const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const DIV_ANN = "ـﮩ════════════════ﮩـ";
+    const annEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle(`${typeCfg.emoji} إعلان مزاد!`)
+      .setColor(0xffd700)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} البائع`,
+          value: `> 👤 <@${schedule.discordUserId}>\n> ${DIV_ANN}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المنشن`,
+          value: `> ${typeCfg.emoji} **${typeCfg.label}**\n> ${DIV_ANN}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} العكلة`,
+          value: `> 💰 **${schedule.sellingPrice}**\n> ${DIV_ANN}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} للشراء`,
+          value: `> 📩 تواصل مع <@${schedule.discordUserId}> مباشرة\n> ${DIV_ANN}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+    const annFiles: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      annFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      annEmbed.setImage("attachment://dragon_banner.webp");
+    }
+
+    await ch.send({ content: mentionText, embeds: [annEmbed], files: annFiles });
+
+    // أكمل الحجز كـ completed
+    await db.update(auctionSchedulesTable)
+      .set({ status: "completed" })
+      .where(eq(auctionSchedulesTable.id, schedule.id))
+      .catch(() => {});
+
+    // قفل الروم بعد 30 دقيقة وتنظيفه
+    setTimeout(async () => {
+      await lockAuctionRoom(guild, channelId);
+      try {
+        let msgs = await ch.messages.fetch({ limit: 100 });
+        while (msgs.size > 0) {
+          await ch.bulkDelete(msgs, true).catch(() => {});
+          if (msgs.size < 100) break;
+          msgs = await ch.messages.fetch({ limit: 100 });
+        }
+      } catch { /* ignore */ }
+    }, 30 * 60 * 1000);
+
+    logger.info({ scheduleId: schedule.id, channelId, aType, sellingPrice: schedule.sellingPrice }, "Auction announcement sent (mention-only)");
+    return;
+  }
+
+  // ── مزاد مزايدة (bidding) ────────────────────────────────────────────────
+  const guildIconURL2 = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+  const DIV_BID = "ـﮩ════════════════ﮩـ";
+  const bidEmbed = new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL2 })
+    .setTitle(`${typeCfg.emoji} بدأ المزاد!`)
+    .setColor(0xff4500)
+    .addFields(
+      {
+        name:  `${STAR_EMOJI} النوع`,
+        value: `> ${typeCfg.emoji} **${typeCfg.label}**\n> ${DIV_BID}`,
+        inline: false,
+      },
+      {
+        name:  `${STAR_EMOJI} المشتري`,
+        value: `> 👤 <@${schedule.discordUserId}>\n> ${DIV_BID}`,
+        inline: false,
+      },
+      {
+        name:  `${STAR_EMOJI} قواعد المزاد`,
+        value: `> 💬 اكتب سعرك (أرقام فقط)\n> 👑 من يكتب أعلى سعر يفوز!\n> ⏱️ المزاد ينتهي بعد **دقيقتين** من آخر عرض\n> ${DIV_BID}`,
+        inline: false,
+      },
+    )
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL2 });
+
+  const bidFiles: AttachmentBuilder[] = [];
+  if (fs.existsSync(DRAGON_BANNER_PATH)) {
+    bidFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+    bidEmbed.setImage("attachment://dragon_banner.webp");
+  }
+
+  await ch.send({ content: mentionText, embeds: [bidEmbed], files: bidFiles });
 
   const inactivityTimer = setTimeout(
     () => endAuction(guild, channelId).catch((e) => logger.error({ e }, "endAuction error")),
@@ -1317,7 +1475,7 @@ async function startAuction(
     inactivityTimer,
   });
 
-  logger.info({ scheduleId: schedule.id, channelId, aType }, "Auction started");
+  logger.info({ scheduleId: schedule.id, channelId, aType }, "Auction started (bidding)");
 }
 
 /**
@@ -1343,6 +1501,7 @@ function startAuctionScheduler(guild: Guild): void {
           auctionType:   sched.auctionType,
           discordUserId: sched.discordUserId,
           roomChannelId: sched.roomChannelId,
+          sellingPrice:  sched.sellingPrice,
         });
       }
     } catch (err) {
@@ -2181,6 +2340,72 @@ client.on(Events.MessageCreate, async (message: Message) => {
             }
 
             logger.info({ userId: matchedAutoLines.userId }, "Auto lines payment confirmed — awaiting image");
+            return;
+          }
+
+          // ── 9. تحقق من منشن إعلان مزاد معلق ────────────────────────────
+          let matchedAucMention: PendingAucMentionPurchase | undefined;
+          if (mentionIds.length > 0) {
+            matchedAucMention = mentionIds
+              .map((id) => pendingAucMentionPurchases.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+
+          if (matchedAucMention) {
+            clearTimeout(matchedAucMention.timeoutId);
+            pendingAucMentionPurchases.delete(matchedAucMention.userId);
+            // ready token ينتهي بعد 10 دقايق لو اليوزر ما ضغطش الزرار
+            const readyTimeoutId = setTimeout(() => {
+              pendingAucMentionReady.delete(matchedAucMention!.userId);
+              logger.info({ userId: matchedAucMention!.userId }, "Auc mention ready token expired");
+            }, 10 * 60 * 1000);
+            pendingAucMentionReady.set(matchedAucMention.userId, {
+              mentionType: matchedAucMention.mentionType,
+              guildId:     matchedAucMention.guildId,
+              timeoutId:   readyTimeoutId,
+            });
+
+            const amTypeCfg  = AUCTION_TYPES[matchedAucMention.mentionType];
+            const DIV_AM3    = "ـﮩ════════════════ﮩـ";
+            const gIAM3      = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+            const amConfEmbed = new EmbedBuilder()
+              .setAuthor({ name: "Dragon $hop", iconURL: gIAM3 })
+              .setTitle(`✅ تم تأكيد الدفع!`)
+              .setDescription(`<@${matchedAucMention.userId}> ${MONEY_EMOJI}\n> ${DIV_AM3}`)
+              .setColor(0x00ff88)
+              .addFields({
+                name:  `${STAR_EMOJI} الخطوة التالية`,
+                value: `> ${MONEY_EMOJI} اضغط الزر عشان تختار تفاصيل إعلانك (الروم + الساعة + العكلة)\n> ${DIV_AM3}`,
+                inline: false,
+              })
+              .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAM3 });
+
+            const amFilesConf: AttachmentBuilder[] = [];
+            if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+              amFilesConf.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+              amConfEmbed.setImage("attachment://dragon_text_banner.webp");
+            }
+
+            const detailsBtn = new ButtonBuilder()
+              .setCustomId(`auc_mention_details_btn_${matchedAucMention.userId}_${matchedAucMention.mentionType}`)
+              .setLabel(`${amTypeCfg.emoji} اختار تفاصيل الإعلان`)
+              .setStyle(ButtonStyle.Primary);
+
+            // ابعت في روم الأوامر
+            try {
+              const cmdCh3 = message.guild
+                ? message.guild.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined
+                : undefined;
+              await cmdCh3?.send({
+                content:    `<@${matchedAucMention.userId}>`,
+                embeds:     [amConfEmbed],
+                files:      amFilesConf,
+                components: [new ActionRowBuilder<ButtonBuilder>().addComponents(detailsBtn)],
+              }).catch(() => {});
+            } catch { /* ignore */ }
+
+            logger.info({ userId: matchedAucMention.userId, mType: matchedAucMention.mentionType }, "Auc mention payment confirmed — awaiting details modal");
             return;
           }
         }
@@ -3531,6 +3756,57 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ── حالة خاصة: منشنات إعلانات المزاد (mention_*_auction / mention_auction) ──
+    const AUC_MENTION_ADDON: Record<string, AuctionType> = {
+      mention_everyone_auction: "everyone",
+      mention_here_auction:     "here",
+      mention_auction:          "offers",
+    };
+
+    if (key in AUC_MENTION_ADDON) {
+      const mType    = AUC_MENTION_ADDON[key]!;
+      const typeCfg  = AUCTION_TYPES[mType];
+      const gIAM     = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const DIV_AM   = "ـﮩ════════════════ﮩـ";
+
+      const amEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAM })
+        .setTitle(`${typeCfg.emoji} منشن إعلان مزاد — ${typeCfg.label}`)
+        .setDescription(`<@${interaction.user.id}> ${MONEY_EMOJI}\n> ${DIV_AM}`)
+        .setColor(0xffd700)
+        .addFields(
+          {
+            name:  `${STAR_EMOJI} ما هو الإعلان؟`,
+            value: `> البوت يمنشن **${typeCfg.label}** في روم المزاد المحدد في الساعة المحددة مع سعر البيع بتاعك\n> ${DIV_AM}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} السعر (شامل عمولة 5%)`,
+            value: `> ${MONEY_EMOJI} **${calcTransferAmount(typeCfg.price).toLocaleString()}** كريدت\n> ${DIV_AM}`,
+            inline: false,
+          },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAM });
+
+      const amFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        amFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        amEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const buyAmBtn = new ButtonBuilder()
+        .setCustomId(`buy_auc_mention_${mType}`)
+        .setLabel(`🛒 شراء منشن إعلان ${typeCfg.label}`)
+        .setStyle(ButtonStyle.Primary);
+
+      await interaction.editReply({
+        embeds:     [amEmbed],
+        files:      amFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyAmBtn)],
+      });
+      return;
+    }
+
     // اجيب السعر من DB
     const [row]     = await db.select().from(addonPricesTable).where(eq(addonPricesTable.key, key));
     const rawPrice   = row ? Number(row.price) : 0;
@@ -3699,6 +3975,382 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     await interaction.editReply({ embeds: [resultEmbed], files: transferFiles });
     await interaction.followUp({ content: `\`${cmd}\``, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // ── زرار شراء منشن إعلان مزاد (buy_auc_mention_*) ──────────────────────
+  // customId: buy_auc_mention_{everyone|here|offers}
+  if (interaction.isButton() && interaction.customId.startsWith("buy_auc_mention_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const mType    = interaction.customId.replace("buy_auc_mention_", "") as AuctionType;
+    const typeCfg  = AUCTION_TYPES[mType];
+    if (!typeCfg) { await interaction.editReply({ content: "❌ نوع منشن غير معروف." }); return; }
+
+    const userId   = interaction.user.id;
+    const username = interaction.user.username;
+    const guild    = interaction.guild!;
+
+    if (await isUserBanned(userId)) {
+      await interaction.editReply({ content: "❌ أنت محظور ولا تستطيع الشراء." });
+      return;
+    }
+
+    // تحقق من عملية معلقة موجودة
+    const existingAM = pendingAucMentionPurchases.get(userId);
+    if (existingAM) {
+      const remainSec = Math.max(0, Math.ceil((existingAM.expiresAt - Date.now()) / 1000));
+      await interaction.editReply({
+        content: `❌ **عندك طلب منشن مزاد معلّق!** الوقت المتبقي: **${Math.floor(remainSec / 60)}:${String(remainSec % 60).padStart(2, "0")}** دقيقة\n\nلو دفعت خلص، البوت هيأكدها تلقائياً. ⏳`,
+      });
+      return;
+    }
+
+    const netPrice    = typeCfg.price;
+    const transferAmt = calcTransferAmount(netPrice);
+    const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
+    const expiresAt   = Date.now() + 5 * 60 * 1000; // 5 دقايق
+
+    const timeoutId = setTimeout(() => {
+      pendingAucMentionPurchases.delete(userId);
+      logger.info({ userId, mType }, "Auction mention purchase timed out");
+    }, 5 * 60 * 1000);
+
+    pendingAucMentionPurchases.set(userId, {
+      userId, username, mentionType: mType,
+      netPrice, transferAmt,
+      guildId:  guild.id,
+      expiresAt, timeoutId,
+    });
+
+    logger.info({ userId, mType, transferAmt }, "Pending auc mention purchase created — 5min window");
+
+    // ابعت embed في روم الأوامر مع زر "أمر التحويل"
+    const DIV_AM2    = "ـﮩ════════════════ﮩـ";
+    const gIAM2      = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const amCmdEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIAM2 })
+      .setTitle(`${typeCfg.emoji} طلب منشن إعلان مزاد — ${typeCfg.label}`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_AM2}`)
+      .setColor(0xffd700)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} المنشن`,
+          value: `> ${MONEY_EMOJI} **${typeCfg.label}**\n> ${DIV_AM2}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} مبلغ التحويل (شامل عمولة 5%)`,
+          value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_AM2}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المهلة`,
+          value: `> ⏰ عندك **5 دقايق** تحول فيهم\n> ${DIV_AM2}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAM2 });
+
+    const amCmdFiles: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      amCmdFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      amCmdEmbed.setImage("attachment://dragon_text_banner.webp");
+    }
+
+    const showCmdBtn = new ButtonBuilder()
+      .setCustomId(`auc_mention_cmd_${userId}_${mType}`)
+      .setLabel("📋 عرض أمر التحويل")
+      .setStyle(ButtonStyle.Primary);
+
+    try {
+      const cmdCh = await guild.channels.fetch(REACTIVATION_CHANNEL_ID).catch(() => null) as TextChannel | null;
+      if (cmdCh) {
+        await cmdCh.send({
+          content:    `<@${userId}>`,
+          embeds:     [amCmdEmbed],
+          files:      amCmdFiles,
+          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(showCmdBtn)],
+        });
+      }
+    } catch (err) {
+      logger.error({ err }, "Failed to send auc mention purchase message in REACTIVATION_CHANNEL_ID");
+    }
+
+    await interaction.editReply({ content: `✅ اتبعت لك رسالة في <#${REACTIVATION_CHANNEL_ID}> — اضغط زر "عرض أمر التحويل" وحول المبلغ!` });
+    return;
+  }
+
+  // ── زرار عرض أمر التحويل للمنشن (auc_mention_cmd_*) ────────────────────
+  // customId: auc_mention_cmd_{userId}_{mType}
+  if (interaction.isButton() && interaction.customId.startsWith("auc_mention_cmd_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const parts  = interaction.customId.replace("auc_mention_cmd_", "").split("_");
+    // parts: [userId, mType] — but mType can be "everyone", "here", "offers"
+    // since userId is all digits, split at first underscore after digits
+    const match2 = interaction.customId.match(/^auc_mention_cmd_(\d+)_(\w+)$/);
+    if (!match2) { await interaction.editReply({ content: "❌ بيانات غلط." }); return; }
+    const [, ownerId, mType2] = match2 as [string, string, AuctionType];
+
+    // فقط صاحب الطلب يقدر يضغط
+    if (interaction.user.id !== ownerId) {
+      await interaction.editReply({ content: "❌ الزرار ده مش بتاعك." });
+      return;
+    }
+
+    const pending2 = pendingAucMentionPurchases.get(ownerId);
+    if (!pending2) {
+      await interaction.editReply({ content: "❌ الطلب انتهى أو اتأكد بالفعل." });
+      return;
+    }
+
+    const typeCfg2 = AUCTION_TYPES[mType2 as AuctionType];
+    if (!typeCfg2) { await interaction.editReply({ content: "❌ نوع غير معروف." }); return; }
+    const cmd2 = `C <@${OWNER_ID}> ${pending2.transferAmt}`;
+
+    const DIV_CMD = "ـﮩ════════════════ﮩـ";
+    const gICMD   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const cmdEmbed2 = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gICMD })
+      .setTitle(`📋 أمر التحويل — ${typeCfg2.label}`)
+      .setDescription(`<@${ownerId}> ${MONEY_EMOJI}\n> ${DIV_CMD}`)
+      .setColor(0xffd700)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} أمر التحويل — انسخه وابعثه في ProBot`,
+          value: `> \`\`\`${cmd2}\`\`\`\n> ${DIV_CMD}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} المبلغ`,
+          value: `> ${MONEY_EMOJI} **${pending2.transferAmt.toLocaleString()}** كريدت\n> ${DIV_CMD}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gICMD });
+
+    await interaction.editReply({ embeds: [cmdEmbed2] });
+    await interaction.followUp({ content: `\`${cmd2}\``, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // ── زرار "اختار تفاصيل المزاد" بعد تأكيد ProBot (auc_mention_details_btn_*) ──
+  if (interaction.isButton() && interaction.customId.startsWith("auc_mention_details_btn_")) {
+    const match3 = interaction.customId.match(/^auc_mention_details_btn_(\d+)_(\w+)$/);
+    if (!match3) return;
+    const [, ownerId3, mType3] = match3 as [string, string, AuctionType];
+
+    if (interaction.user.id !== ownerId3) {
+      await interaction.reply({ content: "❌ الزرار ده مش بتاعك.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    // ✅ تحقق من وجود توكن الدفع المؤكد (single-use)
+    const readyToken = pendingAucMentionReady.get(ownerId3);
+    if (!readyToken || readyToken.mentionType !== mType3 || readyToken.guildId !== (interaction.guildId ?? "")) {
+      await interaction.reply({ content: "❌ مش لاقي تأكيد دفع لهذا الطلب. لو دفعت من فترة، الجلسة انتهت — ابدأ من الأول.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const typeCfg3 = AUCTION_TYPES[mType3];
+    if (!typeCfg3) return;
+
+    const modal3 = new ModalBuilder()
+      .setCustomId(`auc_mention_modal_${ownerId3}_${mType3}`)
+      .setTitle(`تفاصيل إعلان المزاد — ${typeCfg3.label}`);
+
+    const roomInput = new TextInputBuilder()
+      .setCustomId("auc_room_num")
+      .setLabel("رقم الروم (1 أو 2 أو 3)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("1")
+      .setRequired(true)
+      .setMinLength(1)
+      .setMaxLength(1);
+
+    const hourInput = new TextInputBuilder()
+      .setCustomId("auc_hour")
+      .setLabel("الساعة (10 لـ 22 توقيت القاهرة)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("مثال: 14 (= 2م)")
+      .setRequired(true)
+      .setMinLength(2)
+      .setMaxLength(2);
+
+    const priceInput = new TextInputBuilder()
+      .setCustomId("auc_selling_price")
+      .setLabel("العكلة — سعر البيع في المزاد")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("مثال: 5000 أو 2.5k")
+      .setRequired(true)
+      .setMaxLength(50);
+
+    modal3.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(roomInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(hourInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(priceInput),
+    );
+
+    await interaction.showModal(modal3);
+    return;
+  }
+
+  // ── مودال تفاصيل المزاد (auc_mention_modal_*) ────────────────────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("auc_mention_modal_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const match4 = interaction.customId.match(/^auc_mention_modal_(\d+)_(\w+)$/);
+    if (!match4) { await interaction.editReply({ content: "❌ بيانات غلط." }); return; }
+    const [, ownerId4, mType4] = match4 as [string, string, AuctionType];
+
+    if (interaction.user.id !== ownerId4) {
+      await interaction.editReply({ content: "❌ مش بتاعك." });
+      return;
+    }
+
+    // ✅ تحقق من توكن الدفع المؤكد (يمنع تسجيل مزادات بدون دفع)
+    const readyToken4 = pendingAucMentionReady.get(ownerId4);
+    if (!readyToken4 || readyToken4.mentionType !== mType4 || readyToken4.guildId !== (interaction.guildId ?? "")) {
+      await interaction.editReply({ content: "❌ مش لاقي تأكيد دفع لهذا الطلب. الجلسة انتهت — ابدأ من الأول." });
+      return;
+    }
+
+    const typeCfg4 = AUCTION_TYPES[mType4];
+    if (!typeCfg4) { await interaction.editReply({ content: "❌ نوع غير معروف." }); return; }
+
+    // اقرأ القيم من المودال
+    const roomNumStr   = interaction.fields.getTextInputValue("auc_room_num").trim();
+    const hourStr4     = interaction.fields.getTextInputValue("auc_hour").trim();
+    const sellingPrice = interaction.fields.getTextInputValue("auc_selling_price").trim();
+
+    const roomNum = parseInt(roomNumStr, 10);
+    if (isNaN(roomNum) || roomNum < 1 || roomNum > 3) {
+      await interaction.editReply({ content: "❌ رقم الروم لازم يكون 1 أو 2 أو 3 بس." });
+      return;
+    }
+
+    const targetHour4 = parseInt(hourStr4, 10);
+    if (isNaN(targetHour4) || targetHour4 < 10 || targetHour4 > 22) {
+      await interaction.editReply({ content: "❌ الساعة لازم تكون بين 10 و 22 (توقيت القاهرة)." });
+      return;
+    }
+
+    // تحقق إن الساعة لسه جاية (مش فاتت)
+    const { hour: currentHour4 } = getCairoTime();
+    if (targetHour4 <= currentHour4) {
+      await interaction.editReply({ content: `❌ الساعة **${hourToLabel(targetHour4)}** فاتت بالفعل! اختار ساعة قادمة.` });
+      return;
+    }
+
+    if (!sellingPrice) {
+      await interaction.editReply({ content: "❌ لازم تكتب العكلة." });
+      return;
+    }
+
+    const roomChannelId4 = AUCTION_ROOM_CHANNEL_IDS[roomNum - 1];
+    if (!roomChannelId4) {
+      await interaction.editReply({ content: "❌ الروم ده مش موجود." });
+      return;
+    }
+
+    // تحقق إن الوقت والروم مش محجوزين
+    const { date: today4 } = getCairoTime();
+    const existingSlot = await db
+      .select()
+      .from(auctionSchedulesTable)
+      .where(
+        and(
+          eq(auctionSchedulesTable.scheduledDate, today4),
+          eq(auctionSchedulesTable.scheduledHour, targetHour4),
+          eq(auctionSchedulesTable.roomChannelId, roomChannelId4),
+          ne(auctionSchedulesTable.status, "cancelled"),
+        ),
+      )
+      .then((r) => r[0]);
+
+    if (existingSlot) {
+      await interaction.editReply({
+        content: `❌ الروم **${roomNum}** في الساعة **${hourToLabel(targetHour4)}** محجوز بالفعل! اختار وقت أو روم تاني.`,
+      });
+      return;
+    }
+
+    // سجّل في DB
+    const [aucRecord] = await db
+      .insert(auctionSchedulesTable)
+      .values({
+        discordUserId:   ownerId4,
+        discordUsername: interaction.user.username,
+        auctionType:     mType4,
+        scheduledDate:   today4,
+        scheduledHour:   targetHour4,
+        status:          "scheduled", // مدفوع بالفعل — جاهز
+        roomChannelId:   roomChannelId4,
+        ticketChannelId: REACTIVATION_CHANNEL_ID,
+        totalPrice:      String(calcTransferAmount(typeCfg4.price)),
+        sellingPrice:    sellingPrice,
+      })
+      .returning();
+
+    // امسح من الـ ready map (وألغي الـ timeout عشان مفيش memory leak)
+    const usedToken = pendingAucMentionReady.get(ownerId4);
+    if (usedToken) clearTimeout(usedToken.timeoutId);
+    pendingAucMentionReady.delete(ownerId4);
+
+    // بعت تأكيد في روم الأوامر
+    const DIV_CONF = "ـﮩ════════════════ﮩـ";
+    const gICONF   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const confEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gICONF })
+      .setTitle(`✅ تم تسجيل إعلان المزاد!`)
+      .setDescription(`<@${ownerId4}> ${MONEY_EMOJI}\n> ${DIV_CONF}`)
+      .setColor(0x00ff88)
+      .addFields(
+        {
+          name:  `${STAR_EMOJI} المنشن`,
+          value: `> ${typeCfg4.emoji} **${typeCfg4.label}**\n> ${DIV_CONF}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} الروم`,
+          value: `> <#${roomChannelId4}>\n> ${DIV_CONF}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} الموعد`,
+          value: `> ⏰ **${hourToLabel(targetHour4)}** — ${today4} (توقيت القاهرة)\n> ${DIV_CONF}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} العكلة`,
+          value: `> 💰 **${sellingPrice}**\n> ${DIV_CONF}`,
+          inline: false,
+        },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gICONF });
+
+    const confFiles: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      confFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      confEmbed.setImage("attachment://dragon_banner.webp");
+    }
+
+    try {
+      const cmdCh2 = await interaction.guild?.channels.fetch(REACTIVATION_CHANNEL_ID).catch(() => null) as TextChannel | null;
+      await cmdCh2?.send({ content: `<@${ownerId4}>`, embeds: [confEmbed], files: confFiles }).catch(() => {});
+    } catch { /* ignore */ }
+
+    await interaction.editReply({
+      content:
+        `✅ **تم تسجيل إعلانك بنجاح!**\n\n` +
+        `${typeCfg4.emoji} **${typeCfg4.label}** في <#${roomChannelId4}>\n` +
+        `⏰ الموعد: **${hourToLabel(targetHour4)}** — ${today4}\n` +
+        `💰 العكلة: **${sellingPrice}**\n\n` +
+        `البوت هيبعت الإعلان تلقائياً في الموعد المحدد! ✅`,
+    });
+
+    logger.info({ userId: ownerId4, mType: mType4, roomChannelId: roomChannelId4, targetHour: targetHour4, sellingPrice, scheduleId: aucRecord.id }, "Auc mention scheduled");
+
+    // حدّث رسالة المواعيد
+    if (interaction.guild) refreshAuctionScheduleMsg(interaction.guild).catch(() => {});
     return;
   }
 

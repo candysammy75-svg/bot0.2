@@ -180,6 +180,11 @@ export const auctionSchedulesTable = pgTable("auction_schedules", {
   totalPrice:      text("total_price"),
   winnerUserId:    text("winner_user_id"),
   winningBid:      integer("winning_bid"),
+  /**
+   * لو مش null → المزاد ده "إعلان بيع" (mention-only) مش مزاد مزايدة.
+   * بيتخزن السعر اللي صاحب المزاد حاطه.
+   */
+  sellingPrice:    text("selling_price"),
   createdAt:       timestamp("created_at").defaultNow(),
 });
 export type AuctionSchedule = typeof auctionSchedulesTable.$inferSelect;
