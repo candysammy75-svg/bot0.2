@@ -3422,7 +3422,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
       const buyAlBtn = new ButtonBuilder()
         .setCustomId(`pay_auto_lines_${userStore.id}`)
-        .setLabel("🖼️ شراء تلقائي للخطوط")
+        .setLabel("🖼️ سعر خط تلقائي")
         .setStyle(ButtonStyle.Primary);
 
       await interaction.editReply({
