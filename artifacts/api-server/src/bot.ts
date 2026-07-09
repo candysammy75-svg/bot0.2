@@ -2853,6 +2853,67 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ── حالة خاصة: إزالة تحذير من المتجر ──────────────────────────────────
+    if (key === "remove_store_warning") {
+      const userId    = interaction.user.id;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      if (!userStore) {
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
+        return;
+      }
+
+      // مفيش تحذيرات — المستخدم نظيف
+      if (!userStore.roomWarningCount || userStore.roomWarningCount === 0) {
+        await interaction.editReply({
+          content: `انت نظيف حبي <a:bingusgamingpat:1499748957142646794>`,
+        });
+        return;
+      }
+
+      const transferAmt  = calcTransferAmount(WARNING_REMOVAL_PRICE);
+      const DIV_RW       = "ـﮩ════════════════ﮩـ";
+      const gIRW         = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const rwEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIRW })
+        .setTitle(`⚠️ إزالة تحذير من المتجر`)
+        .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_RW}`)
+        .setColor(0xff9900)
+        .addFields(
+          {
+            name:  `${STAR_EMOJI} عدد تحذيراتك`,
+            value: `> ⚠️ **${userStore.roomWarningCount} / 3** تحذير\n> ${DIV_RW}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} سعر إزالة تحذير واحد (شامل عمولة 5%)`,
+            value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_RW}`,
+            inline: false,
+          },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRW });
+
+      const rwFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        rwFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        rwEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const payWarnBtn = new ButtonBuilder()
+        .setCustomId(`pay_remove_warning_${userStore.id}`)
+        .setLabel(`💸 إزالة تحذير — ${transferAmt.toLocaleString()} كريدت`)
+        .setStyle(ButtonStyle.Danger);
+
+      await interaction.editReply({
+        embeds:     [rwEmbed],
+        files:      rwFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payWarnBtn)],
+      });
+      return;
+    }
+
     // ── حالة خاصة: إضافة شريك ──────────────────────────────────────────────
     if (key === "add_partner") {
       const userId    = interaction.user.id;
