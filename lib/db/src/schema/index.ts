@@ -69,8 +69,9 @@ export const purchasesTable = pgTable("purchases", {
   status:          text("status").notNull().default("pending"),
   ticketChannelId: text("ticket_channel_id"),
   discordRoomId:    text("discord_room_id"),
-  roomWarningCount: integer("room_warning_count").notNull().default(0),
-  isRoomDeactivated: boolean("is_room_deactivated").notNull().default(false),
+  roomWarningCount:     integer("room_warning_count").notNull().default(0),
+  isRoomDeactivated:    boolean("is_room_deactivated").notNull().default(false),
+  partnerDiscordUserId: text("partner_discord_user_id"),                        // Discord ID شريك الروم (واحد بس)
   createdAt:        timestamp("created_at").defaultNow(),
   updatedAt:        timestamp("updated_at").defaultNow(),
 });

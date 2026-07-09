@@ -163,11 +163,10 @@ const PEEPO_EMOJI = {
  */
 const ADDONS = [
   // ── Row 1 ─────────────────────────────────────────────────────────────────
-  // شاشة: [إزالة شريك] [شريك] [إضافة شريك] [منشن شوب] [منشن هير]
+  // شاشة: [إزالة شريك] [إضافة شريك] [منشن شوب] [منشن هير]
   { key: "mention_here",              label: "سعر منشن هير" },            // يظهر يمين الصف
   { key: "mention_shop",              label: "سعر منشن شوب" },
   { key: "add_partner",               label: "سعر إضافة شريك" },
-  { key: "partner",                   label: "سعر شريك" },
   { key: "remove_partner",            label: "سعر إزالة شريك" },          // يظهر يسار الصف
   // ── Row 2 ─────────────────────────────────────────────────────────────────
   // شاشة: [تغيير مالك] [تغيير نوع] [تغيير إيموجي] [تفعيل] [تغيير اسم]
@@ -372,6 +371,46 @@ interface PendingRoomReactivation {
 
 const pendingWarningRemovals   = new Map<string, PendingWarningRemoval>();
 const pendingRoomReactivations = new Map<string, PendingRoomReactivation>();
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Partner — Add / Remove — In-Memory Pending Maps
+// ══════════════════════════════════════════════════════════════════════════════
+
+interface PendingAddPartner {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  netPrice:      number;
+  transferAmt:   number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+interface PendingRemovePartner {
+  userId:        string;
+  username:      string;
+  purchaseId:    number;
+  roomChannelId: string;
+  partnerId:     string;
+  netPrice:      number;
+  transferAmt:   number;
+  guildId:       string;
+  expiresAt:     number;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}
+
+const pendingAddPartners    = new Map<string, PendingAddPartner>();
+const pendingRemovePartners = new Map<string, PendingRemovePartner>();
+
+/** بعد تأكيد الدفع: ننتظر الأونر يمنشن الشريك الجديد في الروم */
+const awaitingPartnerMention = new Map<string, {
+  purchaseId:    number;
+  roomChannelId: string;
+  guildId:       string;
+  timeoutId:     ReturnType<typeof setTimeout>;
+}>();
 
 async function cancelPendingStoreRename(userId: string, notify: boolean): Promise<void> {
   const pending = pendingStoreRenames.get(userId);
@@ -904,6 +943,8 @@ let auctionScheduleMsgId: string | null = null;
 //       لو الرصيد خلص أو الكولداون شغال → البوت يسحب الرول → "Failed to send".
 const MENTION_ACTIVE_ROLE_NAME = "منشن مفعّل";
 const MENTION_COOLDOWN_MS      = 30 * 60 * 1000; // 30 دقيقة كولداون بعد كل منشن
+const ADD_PARTNER_PRICE        = 4_000_000;        // سعر إضافة شريك
+const REMOVE_PARTNER_PRICE     = 6_000_000;        // سعر إزالة شريك
 let   mentionActiveRoleId: string | null = null;
 
 /** حالة المزادات الجارية (في الذاكرة — تُصفَّر عند restart البوت) */
@@ -1745,6 +1786,117 @@ client.on(Events.MessageCreate, async (message: Message) => {
             logger.info({ userId: matchedReactivation.userId, purchaseId: matchedReactivation.purchaseId }, "Room reactivated via ProBot payment");
             return;
           }
+
+          // ── 5. تحقق من إضافة شريك معلقة ────────────────────────────────
+          let matchedAddPartner: PendingAddPartner | undefined;
+          if (mentionIds.length > 0) {
+            matchedAddPartner = mentionIds
+              .map((id) => pendingAddPartners.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedAddPartner) {
+            const apCandidates = [...pendingAddPartners.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (apCandidates.length === 1) matchedAddPartner = apCandidates[0];
+          }
+
+          if (matchedAddPartner) {
+            clearTimeout(matchedAddPartner.timeoutId);
+            pendingAddPartners.delete(matchedAddPartner.userId);
+
+            // سجّل انتظار المنشن
+            const apTimeoutId = setTimeout(() => {
+              awaitingPartnerMention.delete(matchedAddPartner!.userId);
+            }, 5 * 60 * 1000);
+            awaitingPartnerMention.set(matchedAddPartner.userId, {
+              purchaseId:    matchedAddPartner.purchaseId,
+              roomChannelId: matchedAddPartner.roomChannelId,
+              guildId:       matchedAddPartner.guildId,
+              timeoutId:     apTimeoutId,
+            });
+
+            // أبلغ الأونر في الروم يمنشن الشريك
+            if (matchedAddPartner.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedAddPartner.roomChannelId) as TextChannel | undefined;
+              if (roomCh) {
+                await roomCh.send(
+                  `✅ تم التأكيد! <@${matchedAddPartner.userId}> منشن الشريك الجديد هنا عشان أضيفه للروم 👇`
+                ).catch(() => {});
+              }
+            }
+
+            logger.info({ userId: matchedAddPartner.userId, purchaseId: matchedAddPartner.purchaseId }, "Add-partner payment confirmed — awaiting mention");
+            return;
+          }
+
+          // ── 6. تحقق من إزالة شريك معلقة ────────────────────────────────
+          let matchedRemovePartner: PendingRemovePartner | undefined;
+          if (mentionIds.length > 0) {
+            matchedRemovePartner = mentionIds
+              .map((id) => pendingRemovePartners.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedRemovePartner) {
+            const rpCandidates = [...pendingRemovePartners.values()].filter(
+              (p) => paid >= p.netPrice && p.guildId === message.guild!.id
+            );
+            if (rpCandidates.length === 1) matchedRemovePartner = rpCandidates[0];
+          }
+
+          if (matchedRemovePartner) {
+            clearTimeout(matchedRemovePartner.timeoutId);
+            pendingRemovePartners.delete(matchedRemovePartner.userId);
+
+            const partnerId = matchedRemovePartner.partnerId;
+
+            // امسح الشريك من DB
+            await db.update(purchasesTable)
+              .set({ partnerDiscordUserId: null })
+              .where(eq(purchasesTable.id, matchedRemovePartner.purchaseId));
+
+            // اسحب صلاحياته من الروم
+            if (matchedRemovePartner.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedRemovePartner.roomChannelId) as TextChannel | undefined;
+              if (roomCh) {
+                await roomCh.permissionOverwrites.delete(partnerId, "Partner removed").catch(() => {});
+
+                // اسحب رول المنشن من الشريك لو مش عنده متجر تاني (أونر أو شريك)
+                const partnerStillActive = await db.select().from(purchasesTable)
+                  .where(and(eq(purchasesTable.status, "completed")))
+                  .then((rows) => rows.some(
+                    (p) => p.discordRoomId && (
+                      p.discordUserId        === partnerId ||
+                      p.partnerDiscordUserId === partnerId
+                    )
+                  ));
+                if (!partnerStillActive) await revokeMentionRole(message.guild, partnerId).catch(() => {});
+
+                const DIV_RP2 = "ـﮩ════════════════ﮩـ";
+                const gIRP2   = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+                const rpSuccessEmbed = new EmbedBuilder()
+                  .setAuthor({ name: "Dragon $hop", iconURL: gIRP2 })
+                  .setTitle("✅ تمت إزالة الشريك بنجاح!")
+                  .setDescription(
+                    `<@${matchedRemovePartner.userId}>\n> ${DIV_RP2}\n\n` +
+                    `الشريك <@${partnerId}> اتشال من متجرك.\n\n` +
+                    `> ${DIV_RP2}`
+                  )
+                  .setColor(0x00ff88)
+                  .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRP2 });
+
+                const rpFiles2: AttachmentBuilder[] = [];
+                if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+                  rpFiles2.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+                  rpSuccessEmbed.setImage("attachment://dragon_text_banner.webp");
+                }
+                await roomCh.send({ embeds: [rpSuccessEmbed], files: rpFiles2 }).catch(() => {});
+              }
+            }
+
+            logger.info({ userId: matchedRemovePartner.userId, partnerId, purchaseId: matchedRemovePartner.purchaseId }, "Partner removed via ProBot payment");
+            return;
+          }
         }
 
         // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
@@ -1937,7 +2089,11 @@ client.on(Events.MessageCreate, async (message: Message) => {
   // NOTE: البوت بيراقب رسائل الشانلات اللي اشتراها العملاء فقط.
   //       الشانلات التانية (زي التذاكر) بيراقبها بس لاسم الروم (تحت).
   const roomPurchase = await db
-    .select({ id: purchasesTable.id, ownerId: purchasesTable.discordUserId })
+    .select({
+      id:                   purchasesTable.id,
+      ownerId:              purchasesTable.discordUserId,
+      partnerDiscordUserId: purchasesTable.partnerDiscordUserId,
+    })
     .from(purchasesTable)
     .where(
       and(
@@ -1973,6 +2129,57 @@ client.on(Events.MessageCreate, async (message: Message) => {
   }
 
   if (isRoomChannel) {
+
+    // ── انتظار منشن الشريك بعد تأكيد الدفع ──────────────────────────────
+    const awaitingMention = awaitingPartnerMention.get(userId);
+    if (awaitingMention && awaitingMention.roomChannelId === channel.id) {
+      const mentionedUser = message.mentions.users.first();
+      if (!mentionedUser || mentionedUser.bot || mentionedUser.id === userId) {
+        await channel.send(`<@${userId}> منشن اليوزر اللي عايزه شريك! (يوزر واحد بس)`).catch(() => {});
+        return;
+      }
+      clearTimeout(awaitingMention.timeoutId);
+      awaitingPartnerMention.delete(userId);
+
+      // أضف صلاحيات الشريك للشانل
+      await channel.permissionOverwrites.edit(mentionedUser.id, {
+        ViewChannel:     true,
+        SendMessages:    true,
+        MentionEveryone: true,
+      }).catch(() => {});
+
+      // ادّيه رول "منشن مفعّل"
+      if (message.guild) await grantMentionRole(message.guild, mentionedUser.id).catch(() => {});
+
+      // حدّث DB
+      await db.update(purchasesTable)
+        .set({ partnerDiscordUserId: mentionedUser.id })
+        .where(eq(purchasesTable.id, awaitingMention.purchaseId));
+
+      // إمبيد نجاح
+      const DIV_AP = "ـﮩ════════════════ﮩـ";
+      const gIAP   = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const apSuccessEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAP })
+        .setTitle("✅ تمت إضافة الشريك بنجاح!")
+        .setDescription(
+          `<@${userId}>\n> ${DIV_AP}\n\n` +
+          `الشريك: <@${mentionedUser.id}>\n` +
+          `الشريك يقدر دلوقتي ينزل في روومك كأنه بتاعه 🤝\n\n` +
+          `> ${DIV_AP}`
+        )
+        .setColor(0x00ff88)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAP });
+
+      const apFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        apFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        apSuccessEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+      await channel.send({ embeds: [apSuccessEmbed], files: apFiles }).catch(() => {});
+      return;
+    }
+
     // ── حذف اللينكات ────────────────────────────────────────────────────
     if (containsLink(content)) {
       await message.delete().catch(() => {});
@@ -2035,14 +2242,19 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
     if (usedEveryone || usedHere || usedOffers) {
       // ── الأدمنستراتور: رصيد لا نهائي — لا خصم ولا كولداون ──────────────
-      // message.member متاح دايماً في guild messages — بنستخدمه مباشرة بدون fetch
       const isAdmin = (message.member ?? await message.guild.members.fetch(userId).catch(() => null))
         ?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
 
       if (!isAdmin) {
-        const u = await getOrCreateUser(userId, username);
+        // لو المُرسِل هو الشريك → اخصم من رصيد الأونر وطبّق الكولداون عليهم الاتنين
+        const isPartner   = roomPurchase?.partnerDiscordUserId === userId;
+        const effectiveId = isPartner ? (roomPurchase!.ownerId) : userId;
+        const effectiveName = isPartner
+          ? ((await message.guild.members.fetch(effectiveId).catch(() => null))?.user.username ?? effectiveId)
+          : username;
 
-        // خصم الرصيد
+        const u = await getOrCreateUser(effectiveId, effectiveName);
+
         const updates: Partial<{
           everyoneBalance: number;
           hereBalance:     number;
@@ -2055,37 +2267,43 @@ client.on(Events.MessageCreate, async (message: Message) => {
         await db
           .update(botUsersTable)
           .set(updates)
-          .where(eq(botUsersTable.discordUserId, userId));
+          .where(eq(botUsersTable.discordUserId, effectiveId));
 
         const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
         const newHere     = updates.hereBalance     ?? u.hereBalance;
         const newOffers   = updates.offersBalance   ?? u.offersBalance;
         const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0;
 
+        // الشريك الحالي (لتطبيق الكولداون عليه أيضاً)
+        const partnerId = roomPurchase?.partnerDiscordUserId ?? null;
+
         if (!hasBalance) {
-          // رصيد خلص — اسحب الرول نهائياً → أي محاولة منشن تانية بتطلع "Failed to send"
-          await revokeMentionRole(message.guild, userId);
+          await revokeMentionRole(message.guild, effectiveId);
+          if (partnerId && partnerId !== effectiveId) await revokeMentionRole(message.guild, partnerId).catch(() => {});
           try {
             await message.author.send(
-              `⛔ رصيد المنشنات بتاعك خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
-              `📊 رصيدك الحالي:\n` +
+              `⛔ رصيد المنشنات ${isPartner ? "بتاع صاحب الروم" : "بتاعك"} خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+              `📊 الرصيد الحالي:\n` +
               `  📢 @everyone: ${newEveryone}\n` +
               `  📣 @here: ${newHere}\n` +
               `  🔔 @offers: ${newOffers}`
             );
           } catch {}
         } else {
-          // في رصيد — اسحب الرول 30 دقيقة (كولداون) ثم رجعه تلقائياً
-          await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
+          // طبّق الكولداون على الأونر والشريك مع بعض
+          await revokeMentionRoleWithCooldown(message.guild, effectiveId, MENTION_COOLDOWN_MS);
+          if (partnerId && partnerId !== effectiveId) {
+            await revokeMentionRoleWithCooldown(message.guild, partnerId, MENTION_COOLDOWN_MS).catch(() => {});
+          }
           const lines: string[] = [];
-          if (usedEveryone) lines.push(`📢 @everyone: تبقى لك ${newEveryone} منشن`);
-          if (usedHere)     lines.push(`📣 @here: تبقى لك ${newHere} منشن`);
-          if (usedOffers)   lines.push(`🔔 @offers: تبقى لك ${newOffers} منشن`);
+          if (usedEveryone) lines.push(`📢 @everyone: تبقى ${newEveryone} منشن`);
+          if (usedHere)     lines.push(`📣 @here: تبقى ${newHere} منشن`);
+          if (usedOffers)   lines.push(`🔔 @offers: تبقى ${newOffers} منشن`);
           lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
           try { await message.author.send(lines.join("\n")); } catch {}
         }
       }
-      // الأدمن: مفيش خصم ولا إشعار — المنشن بيمشي بحرية كاملة
+      // الأدمن: مفيش خصم ولا إشعار
     }
   }
 
@@ -2664,6 +2882,107 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         embeds:     [actEmbed],
         files:      actFiles,
         components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payReactBtn)],
+      });
+      return;
+    }
+
+    // ── حالة خاصة: إضافة شريك ──────────────────────────────────────────────
+    if (key === "add_partner") {
+      const userId    = interaction.user.id;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      if (!userStore) {
+        await interaction.editReply({ content: "❌ لازم يكون عندك متجر عشان تقدر تضيف شريك." });
+        return;
+      }
+      if (userStore.partnerDiscordUserId) {
+        await interaction.editReply({ content: `❌ متجرك عنده شريك بالفعل! (<@${userStore.partnerDiscordUserId}>)\nلازم تشيله الأول بزرار "سعر إزالة شريك".` });
+        return;
+      }
+
+      const apGross = calcTransferAmount(ADD_PARTNER_PRICE);
+      const DIV_AP  = "ـﮩ════════════════ﮩـ";
+      const gIAP    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+      const apEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAP })
+        .setTitle(`${STAR_EMOJI} إضافة شريك للمتجر`)
+        .setDescription(`<@${userId}>\n> ${DIV_AP}`)
+        .setColor(0x00bfff)
+        .addFields(
+          { name: `${STAR_EMOJI} متجرك`,    value: `> **${userStore.customRoomName ?? userStore.roomName}**\n> ${DIV_AP}`, inline: false },
+          { name: `${STAR_EMOJI} السعر`,    value: `> ${MONEY_EMOJI} **${apGross.toLocaleString()}** كريدت\n> ${DIV_AP}`, inline: false },
+          { name: `${STAR_EMOJI} ملاحظات`, value: `> تقدر تضيف شريك واحد بس\n> الكولداون هيطبق على الاتنين مع بعض\n> ${DIV_AP}`, inline: false },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAP });
+
+      const apFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        apFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        apEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const payApBtn = new ButtonBuilder()
+        .setCustomId(`pay_add_partner_${userStore.id}`)
+        .setLabel("💸 دفع وإضافة شريك")
+        .setStyle(ButtonStyle.Primary);
+
+      await interaction.editReply({
+        embeds:     [apEmbed],
+        files:      apFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payApBtn)],
+      });
+      return;
+    }
+
+    // ── حالة خاصة: إزالة شريك ──────────────────────────────────────────────
+    if (key === "remove_partner") {
+      const userId    = interaction.user.id;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      if (!userStore) {
+        await interaction.editReply({ content: "❌ مش عندك متجر." });
+        return;
+      }
+      if (!userStore.partnerDiscordUserId) {
+        await interaction.editReply({ content: "❌ متجرك مفيش فيه شريك." });
+        return;
+      }
+
+      const rpGross = calcTransferAmount(REMOVE_PARTNER_PRICE);
+      const DIV_RP  = "ـﮩ════════════════ﮩـ";
+      const gIRP    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+      const rpEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIRP })
+        .setTitle(`${STAR_EMOJI} إزالة شريك من المتجر`)
+        .setDescription(`<@${userId}>\n> ${DIV_RP}`)
+        .setColor(0xff4444)
+        .addFields(
+          { name: `${STAR_EMOJI} الشريك الحالي`, value: `> <@${userStore.partnerDiscordUserId}>\n> ${DIV_RP}`, inline: false },
+          { name: `${STAR_EMOJI} السعر`,          value: `> ${MONEY_EMOJI} **${rpGross.toLocaleString()}** كريدت\n> ${DIV_RP}`, inline: false },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRP });
+
+      const rpFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        rpFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        rpEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const payRpBtn = new ButtonBuilder()
+        .setCustomId(`pay_remove_partner_${userStore.id}`)
+        .setLabel("💸 دفع وإزالة الشريك")
+        .setStyle(ButtonStyle.Danger);
+
+      await interaction.editReply({
+        embeds:     [rpEmbed],
+        files:      rpFiles,
+        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payRpBtn)],
       });
       return;
     }
@@ -3547,6 +3866,146 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         `💰 المبلغ: **${reactGross.toLocaleString()}** كريدت\n` +
         `⏳ عندك **5 دقايق** تحول فيهم.`,
     });
+    return;
+  }
+
+  // ── زرار دفع إضافة شريك (pay_add_partner_*) ─────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pay_add_partner_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("pay_add_partner_", ""), 10);
+    const userId     = interaction.user.id;
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(
+        eq(purchasesTable.id, purchaseId),
+        eq(purchasesTable.discordUserId, userId),
+        eq(purchasesTable.status, "completed"),
+      ))
+      .then((r) => r[0]);
+
+    if (!purchase || !purchase.discordRoomId) {
+      await interaction.editReply({ content: "❌ مش لاقي المتجر ده." });
+      return;
+    }
+    if (purchase.partnerDiscordUserId) {
+      await interaction.editReply({ content: "❌ متجرك عنده شريك بالفعل." });
+      return;
+    }
+    if (pendingAddPartners.has(userId)) {
+      await interaction.editReply({ content: "⏳ عندك عملية إضافة شريك لسه شغّالة." });
+      return;
+    }
+
+    const apGross   = calcTransferAmount(ADD_PARTNER_PRICE);
+    const cmd       = `C <@${OWNER_ID}> ${apGross}`;
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const timeoutId = setTimeout(() => { pendingAddPartners.delete(userId); }, 5 * 60 * 1000);
+
+    pendingAddPartners.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId,
+      netPrice:      ADD_PARTNER_PRICE,
+      transferAmt:   apGross,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    // أرسل أمر ProBot في قناة التحويلات
+    const apChannel = interaction.guild?.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined;
+    if (apChannel) {
+      await apChannel.send(
+        `<@${userId}> لإضافة شريك لمتجرك حوّل المبلغ التالي:\n\`\`\`${cmd}\`\`\``
+      ).catch(() => {});
+    }
+
+    const DIV_APB = "ـﮩ════════════════ﮩـ";
+    const gIAPB   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const apPayEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIAPB })
+      .setTitle("🤝 إضافة شريك")
+      .setDescription(
+        `<@${userId}>\n> ${DIV_APB}\n\n` +
+        `\`\`\`${cmd}\`\`\`\n` +
+        `> ${MONEY_EMOJI} **${apGross.toLocaleString()}** كريدت\n` +
+        `> ⏳ عندك **5 دقايق** تحول فيهم\n> ${DIV_APB}`
+      )
+      .setColor(0x00bfff)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAPB });
+
+    await interaction.editReply({ embeds: [apPayEmbed] });
+    return;
+  }
+
+  // ── زرار دفع إزالة شريك (pay_remove_partner_*) ───────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("pay_remove_partner_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("pay_remove_partner_", ""), 10);
+    const userId     = interaction.user.id;
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(
+        eq(purchasesTable.id, purchaseId),
+        eq(purchasesTable.discordUserId, userId),
+        eq(purchasesTable.status, "completed"),
+      ))
+      .then((r) => r[0]);
+
+    if (!purchase || !purchase.discordRoomId) {
+      await interaction.editReply({ content: "❌ مش لاقي المتجر ده." });
+      return;
+    }
+    if (!purchase.partnerDiscordUserId) {
+      await interaction.editReply({ content: "❌ متجرك مفيش فيه شريك." });
+      return;
+    }
+    if (pendingRemovePartners.has(userId)) {
+      await interaction.editReply({ content: "⏳ عندك عملية إزالة شريك لسه شغّالة." });
+      return;
+    }
+
+    const rpGross   = calcTransferAmount(REMOVE_PARTNER_PRICE);
+    const cmd       = `C <@${OWNER_ID}> ${rpGross}`;
+    const expiresAt = Date.now() + 5 * 60 * 1000;
+    const timeoutId = setTimeout(() => { pendingRemovePartners.delete(userId); }, 5 * 60 * 1000);
+
+    pendingRemovePartners.set(userId, {
+      userId,
+      username:      interaction.user.username,
+      purchaseId,
+      roomChannelId: purchase.discordRoomId,
+      partnerId:     purchase.partnerDiscordUserId,
+      netPrice:      REMOVE_PARTNER_PRICE,
+      transferAmt:   rpGross,
+      guildId:       interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    const rpChannel = interaction.guild?.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined;
+    if (rpChannel) {
+      await rpChannel.send(
+        `<@${userId}> لإزالة شريك من متجرك حوّل المبلغ التالي:\n\`\`\`${cmd}\`\`\``
+      ).catch(() => {});
+    }
+
+    const DIV_RPB = "ـﮩ════════════════ﮩـ";
+    const gIRPB   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const rpPayEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIRPB })
+      .setTitle("🗑️ إزالة شريك")
+      .setDescription(
+        `<@${userId}>\n> ${DIV_RPB}\n\n` +
+        `\`\`\`${cmd}\`\`\`\n` +
+        `> ${MONEY_EMOJI} **${rpGross.toLocaleString()}** كريدت\n` +
+        `> ⏳ عندك **5 دقايق** تحول فيهم\n> ${DIV_RPB}`
+      )
+      .setColor(0xff4444)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRPB });
+
+    await interaction.editReply({ embeds: [rpPayEmbed] });
     return;
   }
 
