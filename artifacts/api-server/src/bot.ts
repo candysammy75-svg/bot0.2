@@ -37,6 +37,8 @@ import {
   ModalBuilder,
   TextInputBuilder,
   TextInputStyle,
+  StringSelectMenuBuilder,
+  StringSelectMenuOptionBuilder,
   type TextChannel,
   type Message,
   type Interaction,
@@ -401,6 +403,131 @@ interface PendingRemovePartner {
 
 const pendingAddPartners    = new Map<string, PendingAddPartner>();
 const pendingRemovePartners = new Map<string, PendingRemovePartner>();
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Auto Publish — النشر التلقائي في روم العميل
+//
+//  Flow:
+//    1. المستخدم يضغط "سعر النشر التلقائي" → البوت يفتح تذكرة ويبعت select menu للمدة
+//    2. يختار المدة (1-7 أيام) → البوت يحسب السعر ويبعت أمر التحويل
+//    3. ProBot يأكد الدفع → البوت يسأل عن رصيد المنشنات
+//    4. YES → مودال بفيلد نوع المنشن + العدد + الرسالة + صورة اختيارية
+//       NO  → مودال بفيلد الرسالة + صورة اختيارية
+//    5. البوت يبدأ النشر كل 6 ساعات في روم العميل طول المدة
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** سعر النشر التلقائي بالكريدت في اليوم الواحد */
+const AUTO_PUBLISH_PRICE_PER_DAY = 2_000_000;
+
+/** فترة النشر — كل 6 ساعات */
+const AUTO_PUBLISH_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+interface PendingAutoPublish {
+  userId:          string;
+  username:        string;
+  storePurchaseId: number;
+  roomChannelId:   string;
+  ticketChannelId: string;
+  days:            number;
+  netPrice:        number;
+  transferAmt:     number;
+  guildId:         string;
+  expiresAt:       number;
+  timeoutId:       ReturnType<typeof setTimeout>;
+}
+
+interface ActiveAutoPublish {
+  userId:         string;
+  roomChannelId:  string;
+  message:        string;
+  imageUrl?:      string;
+  mentionType?:   "here" | "everyone" | "offers";
+  mentionsPerPost: number;
+  intervalId:     ReturnType<typeof setInterval>;
+  endTimeoutId:   ReturnType<typeof setTimeout>;
+}
+
+const pendingAutoPublishes = new Map<string, PendingAutoPublish>();
+const activeAutoPublishes  = new Map<string, ActiveAutoPublish>();
+
+/**
+ * يبدأ النشر التلقائي في روم العميل كل 6 ساعات طول المدة المدفوعة.
+ * لو المستخدم اختار منشنات، البوت بيخصمها من رصيده كل نشرة.
+ */
+async function startAutoPublish(
+  guild: Guild,
+  params: {
+    userId:          string;
+    username:        string;
+    roomChannelId:   string;
+    message:         string;
+    imageUrl?:       string;
+    mentionType?:    "here" | "everyone" | "offers";
+    mentionsPerPost: number;
+    durationMs:      number;
+  },
+): Promise<void> {
+  const doPost = async () => {
+    try {
+      const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
+      if (!roomCh) return;
+
+      let mentionText = "";
+      if (params.mentionType && params.mentionsPerPost > 0) {
+        const user   = await getOrCreateUser(params.userId, params.username);
+        const balKey =
+          params.mentionType === "here"     ? "hereBalance" :
+          params.mentionType === "everyone" ? "everyoneBalance" : "offersBalance";
+        if (user[balKey] >= params.mentionsPerPost) {
+          await db.update(botUsersTable)
+            .set({ [balKey]: user[balKey] - params.mentionsPerPost })
+            .where(eq(botUsersTable.discordUserId, params.userId));
+          mentionText =
+            params.mentionType === "here"     ? "@here" :
+            params.mentionType === "everyone" ? "@everyone" : `<@&${OFFERS_ROLE_ID}>`;
+        }
+      }
+
+      if (params.imageUrl) {
+        const embed = new EmbedBuilder()
+          .setDescription(params.message)
+          .setImage(params.imageUrl)
+          .setColor(0x00bfff);
+        await roomCh.send({
+          content: mentionText || undefined,
+          embeds:  [embed],
+        }).catch(() => roomCh.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {}));
+      } else {
+        await roomCh.send({ content: `${mentionText}\n${params.message}`.trim() }).catch(() => {});
+      }
+    } catch { /* ignore */ }
+  };
+
+  // نشر فوري ثم كل 6 ساعات
+  await doPost();
+  const intervalId = setInterval(doPost, AUTO_PUBLISH_INTERVAL_MS);
+
+  // وقف النشر بعد المدة
+  const endTimeoutId = setTimeout(async () => {
+    clearInterval(intervalId);
+    activeAutoPublishes.delete(params.userId);
+    try {
+      const roomCh = guild.channels.cache.get(params.roomChannelId) as TextChannel | undefined;
+      await roomCh?.send(`✅ <@${params.userId}> انتهت مدة النشر التلقائي لمتجرك.`);
+    } catch { /* ignore */ }
+  }, params.durationMs);
+
+  activeAutoPublishes.set(params.userId, {
+    userId:          params.userId,
+    roomChannelId:   params.roomChannelId,
+    message:         params.message,
+    imageUrl:        params.imageUrl,
+    mentionType:     params.mentionType,
+    mentionsPerPost: params.mentionsPerPost,
+    intervalId,
+    endTimeoutId,
+  });
+}
 
 /** بعد تأكيد الدفع: ننتظر الأونر يمنشن الشريك الجديد في الروم */
 const awaitingPartnerMention = new Map<string, {
@@ -1867,6 +1994,62 @@ client.on(Events.MessageCreate, async (message: Message) => {
             logger.info({ userId: matchedRemovePartner.userId, partnerId, purchaseId: matchedRemovePartner.purchaseId }, "Partner removed via ProBot payment");
             return;
           }
+
+          // ── 7. تحقق من نشر تلقائي معلق ─────────────────────────────────
+          let matchedAutoPublish: PendingAutoPublish | undefined;
+          if (mentionIds.length > 0) {
+            matchedAutoPublish = mentionIds
+              .map((id) => pendingAutoPublishes.get(id))
+              .find((p) => p && paid >= p.netPrice && p.guildId === message.guild!.id);
+          }
+          if (!matchedAutoPublish && mentionIds.length === 0) {
+            logger.warn({ paid, channelId: channel.id }, "ProBot transfer with no user mentions — cannot attribute auto publish, skipping");
+          }
+
+          if (matchedAutoPublish) {
+            clearTimeout(matchedAutoPublish.timeoutId);
+            pendingAutoPublishes.delete(matchedAutoPublish.userId);
+
+            // أغلق التذكرة بعد 3 ثواني
+            setTimeout(() => channel.delete("Auto publish payment confirmed").catch(() => {}), 3000);
+
+            // اسأل عن رصيد المنشنات
+            const DIV_APP = "ـﮩ════════════════ﮩـ";
+            const gIAPP   = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+            const apConfirmEmbed = new EmbedBuilder()
+              .setAuthor({ name: "Dragon $hop", iconURL: gIAPP })
+              .setTitle("✅ تم تأكيد الدفع!")
+              .setDescription(`<@${matchedAutoPublish.userId}> ${MONEY_EMOJI}\n> ${DIV_APP}`)
+              .setColor(0x00ff88)
+              .addFields({
+                name:  `${STAR_EMOJI} السؤال`,
+                value: `> عايزني استخدم من رصيد منشناتك مع كل نشرة ولا لا؟\n> ${DIV_APP}`,
+                inline: false,
+              })
+              .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAPP });
+
+            const yesBtn = new ButtonBuilder()
+              .setCustomId(`autopub_mention_yes_${matchedAutoPublish.userId}_${matchedAutoPublish.storePurchaseId}_${matchedAutoPublish.days}_${matchedAutoPublish.roomChannelId}`)
+              .setLabel("✅ أيوه استخدم منشناتي")
+              .setStyle(ButtonStyle.Success);
+            const noBtn = new ButtonBuilder()
+              .setCustomId(`autopub_mention_no_${matchedAutoPublish.userId}_${matchedAutoPublish.storePurchaseId}_${matchedAutoPublish.days}_${matchedAutoPublish.roomChannelId}`)
+              .setLabel("❌ لأ بدون منشنات")
+              .setStyle(ButtonStyle.Secondary);
+
+            // ابعت في روم العميل مش التذكرة (اللي هتتحذف)
+            if (matchedAutoPublish.roomChannelId && message.guild) {
+              const roomCh = message.guild.channels.cache.get(matchedAutoPublish.roomChannelId) as TextChannel | undefined;
+              await roomCh?.send({
+                content:    `<@${matchedAutoPublish.userId}>`,
+                embeds:     [apConfirmEmbed],
+                components: [new ActionRowBuilder<ButtonBuilder>().addComponents(yesBtn, noBtn)],
+              }).catch(() => {});
+            }
+
+            logger.info({ userId: matchedAutoPublish.userId, days: matchedAutoPublish.days }, "Auto publish payment confirmed — awaiting mention choice");
+            return;
+          }
         }
 
         // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
@@ -2911,6 +3094,100 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         files:      rwFiles,
         components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payWarnBtn)],
       });
+      return;
+    }
+
+    // ── حالة خاصة: النشر التلقائي ─────────────────────────────────────────────
+    if (key === "auto_publish") {
+      const userId    = interaction.user.id;
+      const username  = interaction.user.username;
+      const userStore = await db.select().from(purchasesTable)
+        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+        .then((rows) => rows.find((p) => p.discordRoomId));
+
+      if (!userStore) {
+        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
+        return;
+      }
+
+      if (activeAutoPublishes.has(userId)) {
+        await interaction.editReply({ content: "⏳ عندك نشر تلقائي شغّال بالفعل. خلّيه يخلص الأول." });
+        return;
+      }
+
+      if (pendingAutoPublishes.has(userId)) {
+        await interaction.editReply({ content: "⏳ عندك طلب نشر تلقائي لسه معلّق. خلّيه يخلص الأول." });
+        return;
+      }
+
+      const guild = interaction.guild!;
+
+      // افتح تذكرة تحت كاتيجوري التذاكر
+      const ticketChannel = await guild.channels.create({
+        name:   `publish-${username}`,
+        type:   ChannelType.GuildText,
+        parent: TICKETS_CATEGORY_ID,
+        permissionOverwrites: [
+          { id: guild.id,             deny:  [PermissionFlagsBits.ViewChannel] },
+          { id: userId,               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          { id: guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
+        ],
+      });
+
+      const DIV_AP  = "ـﮩ════════════════ﮩـ";
+      const gIAP    = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+      const apEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIAP })
+        .setTitle(`📢 النشر التلقائي في متجرك`)
+        .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_AP}`)
+        .setColor(0x9b59b6)
+        .addFields(
+          {
+            name:  `${STAR_EMOJI} السعر`,
+            value: `> ${MONEY_EMOJI} **${AUTO_PUBLISH_PRICE_PER_DAY.toLocaleString()}** كريدت / يوم\n> ${DIV_AP}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} التردد`,
+            value: `> 🔄 نشر كل **6 ساعات** طول المدة\n> ${DIV_AP}`,
+            inline: false,
+          },
+          {
+            name:  `${STAR_EMOJI} الخطوة التالية`,
+            value: `> اختار المدة من القائمة تحت ⬇️\n> ${DIV_AP}`,
+            inline: false,
+          },
+        )
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAP });
+
+      const apFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        apFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        apEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      const durationSelect = new StringSelectMenuBuilder()
+        .setCustomId(`autopub_duration_${userId}`)
+        .setPlaceholder("⏱ اختار المدة")
+        .addOptions(
+          new StringSelectMenuOptionBuilder().setLabel("يوم واحد").setValue("1").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 1).toLocaleString()} كريدت`).setEmoji("1️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("يومين").setValue("2").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 2).toLocaleString()} كريدت`).setEmoji("2️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("3 أيام").setValue("3").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 3).toLocaleString()} كريدت`).setEmoji("3️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("4 أيام").setValue("4").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 4).toLocaleString()} كريدت`).setEmoji("4️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("5 أيام").setValue("5").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 5).toLocaleString()} كريدت`).setEmoji("5️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("6 أيام").setValue("6").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 6).toLocaleString()} كريدت`).setEmoji("6️⃣"),
+          new StringSelectMenuOptionBuilder().setLabel("أسبوع كامل (7 أيام)").setValue("7").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 7).toLocaleString()} كريدت`).setEmoji("7️⃣"),
+        );
+
+      await ticketChannel.send({
+        content:    `<@${userId}>`,
+        embeds:     [apEmbed],
+        files:      apFiles,
+        components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(durationSelect)],
+      });
+
+      await interaction.editReply({ content: `✅ افتحت لك تذكرة في <#${ticketChannel.id}> — اختار المدة من هناك!` });
       return;
     }
 
@@ -4563,6 +4840,287 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         ? `✅ تم تحذير <@${targetUser.id}> وتم **إيقاف** متجره (3/3 تحذيرات).`
         : `✅ تم تحذير <@${targetUser.id}> — تحذير **${newWarningCount}/3**.`,
     });
+  }
+
+  // ── StringSelectMenu: اختيار مدة النشر التلقائي (autopub_duration_*) ───────
+  if (interaction.isStringSelectMenu() && interaction.customId.startsWith("autopub_duration_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const userId  = interaction.customId.replace("autopub_duration_", "");
+    const days    = parseInt(interaction.values[0]!, 10);
+    const netPrice    = AUTO_PUBLISH_PRICE_PER_DAY * days;
+    const transferAmt = calcTransferAmount(netPrice);
+    const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
+    const expiresAt   = Date.now() + 10 * 60 * 1000; // 10 دقايق
+
+    // تحقق من وجود متجر
+    const userStore = await db.select().from(purchasesTable)
+      .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+      .then((rows) => rows.find((p) => p.discordRoomId));
+    if (!userStore) {
+      await interaction.editReply({ content: "❌ مش لاقي متجرك." });
+      return;
+    }
+
+    if (pendingAutoPublishes.has(userId)) clearTimeout(pendingAutoPublishes.get(userId)!.timeoutId);
+    const timeoutId = setTimeout(() => {
+      pendingAutoPublishes.delete(userId);
+    }, 10 * 60 * 1000);
+
+    pendingAutoPublishes.set(userId, {
+      userId,
+      username:        interaction.user.username,
+      storePurchaseId: userStore.id,
+      roomChannelId:   userStore.discordRoomId ?? "",
+      ticketChannelId: interaction.channelId,
+      days,
+      netPrice,
+      transferAmt,
+      guildId:   interaction.guildId ?? "",
+      expiresAt,
+      timeoutId,
+    });
+
+    const DIV_DS  = "ـﮩ════════════════ﮩـ";
+    const gIDS    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const dsEmbed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: gIDS })
+      .setTitle(`📢 النشر التلقائي — ${days} ${days === 1 ? "يوم" : "أيام"}`)
+      .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_DS}`)
+      .setColor(0x9b59b6)
+      .addFields(
+        { name: `${STAR_EMOJI} المدة`,          value: `> ⏱ **${days}** ${days === 1 ? "يوم" : "أيام"} (نشر كل 6 ساعات)\n> ${DIV_DS}`, inline: false },
+        { name: `${STAR_EMOJI} المبلغ المطلوب`, value: `> ${MONEY_EMOJI} **${transferAmt.toLocaleString()}** كريدت\n> ${DIV_DS}`, inline: false },
+        { name: `${STAR_EMOJI} أمر التحويل`,    value: `\`\`\`${cmd}\`\`\`\n> ${DIV_DS}`, inline: false },
+        { name: `${STAR_EMOJI} المهلة`,          value: `> ⏳ عندك **10 دقايق** تحول فيهم\n> ${DIV_DS}`, inline: false },
+      )
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIDS });
+
+    await interaction.editReply({ embeds: [dsEmbed] });
+    return;
+  }
+
+  // ── زرار YES — استخدام رصيد المنشنات مع النشر ─────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("autopub_mention_yes_")) {
+    // format: autopub_mention_yes_{userId}_{purchaseId}_{days}_{roomChannelId}
+    const parts         = interaction.customId.replace("autopub_mention_yes_", "").split("_");
+    const userId        = parts[0]!;
+    const days          = parseInt(parts[2]!, 10);
+    const roomChannelId = parts.slice(3).join("_");
+
+    if (interaction.user.id !== userId) {
+      await interaction.reply({ content: "❌ الزرار ده مش ليك.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`modal_autopub_yes_${userId}_${days}_${roomChannelId}`)
+      .setTitle("📢 تفاصيل النشر التلقائي");
+
+    const mentionTypeInput = new TextInputBuilder()
+      .setCustomId("mention_type")
+      .setLabel("نوع المنشن (here / everyone / offers)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("here")
+      .setRequired(true)
+      .setMaxLength(10);
+
+    const mentionCountInput = new TextInputBuilder()
+      .setCustomId("mention_count")
+      .setLabel("كام منشن كل نشرة؟")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("1")
+      .setRequired(true)
+      .setMaxLength(3);
+
+    const messageInput = new TextInputBuilder()
+      .setCustomId("message")
+      .setLabel("رسالة الإعلان")
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder("اكتب الإعلان هنا...")
+      .setRequired(true)
+      .setMaxLength(1800);
+
+    const imageInput = new TextInputBuilder()
+      .setCustomId("image_url")
+      .setLabel("لينك الصورة (اختياري)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("https://...")
+      .setRequired(false)
+      .setMaxLength(500);
+
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(mentionTypeInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(mentionCountInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput),
+    );
+
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── زرار NO — بدون منشنات، مودال مباشر ───────────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("autopub_mention_no_")) {
+    const parts         = interaction.customId.replace("autopub_mention_no_", "").split("_");
+    const userId        = parts[0]!;
+    const days          = parseInt(parts[2]!, 10);
+    const roomChannelId = parts.slice(3).join("_");
+
+    if (interaction.user.id !== userId) {
+      await interaction.reply({ content: "❌ الزرار ده مش ليك.", flags: MessageFlags.Ephemeral });
+      return;
+    }
+
+    const modal = new ModalBuilder()
+      .setCustomId(`modal_autopub_no_${userId}_${days}_${roomChannelId}`)
+      .setTitle("📢 رسالة النشر التلقائي");
+
+    const messageInput = new TextInputBuilder()
+      .setCustomId("message")
+      .setLabel("رسالة الإعلان")
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder("اكتب الإعلان هنا...")
+      .setRequired(true)
+      .setMaxLength(1800);
+
+    const imageInput = new TextInputBuilder()
+      .setCustomId("image_url")
+      .setLabel("لينك الصورة (اختياري)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("https://...")
+      .setRequired(false)
+      .setMaxLength(500);
+
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(messageInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(imageInput),
+    );
+
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── مودال النشر التلقائي مع منشنات (modal_autopub_yes_*) ─────────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_autopub_yes_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const rest          = interaction.customId.replace("modal_autopub_yes_", "");
+    const firstUnderscore  = rest.indexOf("_");
+    const secondUnderscore = rest.indexOf("_", firstUnderscore + 1);
+    const userId        = rest.slice(0, firstUnderscore);
+    const days          = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
+    const roomChannelId = rest.slice(secondUnderscore + 1);
+
+    const rawMentionType  = interaction.fields.getTextInputValue("mention_type").trim().toLowerCase();
+    const rawMentionCount = interaction.fields.getTextInputValue("mention_count").trim();
+    const msgContent      = interaction.fields.getTextInputValue("message").trim();
+    const imageUrl        = interaction.fields.getTextInputValue("image_url").trim() || undefined;
+
+    // تحقق من نوع المنشن
+    const validTypes = ["here", "everyone", "offers"] as const;
+    const mentionType = validTypes.find((t) => t === rawMentionType);
+    if (!mentionType) {
+      await interaction.editReply({ content: `❌ نوع المنشن غلط — لازم يكون: here / everyone / offers` });
+      return;
+    }
+
+    const mentionsPerPost = parseInt(rawMentionCount, 10);
+    if (isNaN(mentionsPerPost) || mentionsPerPost < 1 || mentionsPerPost > 50) {
+      await interaction.editReply({ content: "❌ عدد المنشنات لازم يكون بين 1 و50." });
+      return;
+    }
+
+    // تحقق من الرصيد
+    const user   = await getOrCreateUser(userId, interaction.user.username);
+    const balKey =
+      mentionType === "here"     ? "hereBalance" :
+      mentionType === "everyone" ? "everyoneBalance" : "offersBalance";
+    if (user[balKey] < mentionsPerPost) {
+      await interaction.editReply({
+        content: `❌ رصيدك من @${mentionType} (${user[balKey]}) أقل من المطلوب كل نشرة (${mentionsPerPost}).`,
+      });
+      return;
+    }
+
+    // تحقق من المحتوى
+    const hasBadWord  = findBadWord(msgContent);
+    const hasLink     = /https?:\/\/|www\./i.test(msgContent);
+    const hasMention  = /@(everyone|here)|<@[&!]?\d+>/.test(msgContent);
+    if (hasBadWord) {
+      await interaction.editReply({ content: `❌ الرسالة تحتوي على كلمة محظورة.` });
+      return;
+    }
+    if (hasLink) {
+      await interaction.editReply({ content: `❌ ممنوع نشر لينكات في الإعلان.` });
+      return;
+    }
+    if (hasMention) {
+      await interaction.editReply({ content: `❌ ممنوع وضع منشنات في نص الرسالة — استخدم زرار المنشنات الخاص.` });
+      return;
+    }
+
+    const guild = interaction.guild!;
+    await startAutoPublish(guild, {
+      userId,
+      username:        interaction.user.username,
+      roomChannelId,
+      message:         msgContent,
+      imageUrl,
+      mentionType,
+      mentionsPerPost,
+      durationMs:      days * 24 * 60 * 60 * 1000,
+    });
+
+    await interaction.editReply({
+      content: `✅ بدأ النشر التلقائي في متجرك! كل 6 ساعات لمدة **${days}** ${days === 1 ? "يوم" : "أيام"} مع منشن @${mentionType} (${mentionsPerPost} كل نشرة).`,
+    });
+    return;
+  }
+
+  // ── مودال النشر التلقائي بدون منشنات (modal_autopub_no_*) ────────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_autopub_no_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const rest             = interaction.customId.replace("modal_autopub_no_", "");
+    const firstUnderscore  = rest.indexOf("_");
+    const secondUnderscore = rest.indexOf("_", firstUnderscore + 1);
+    const userId           = rest.slice(0, firstUnderscore);
+    const days             = parseInt(rest.slice(firstUnderscore + 1, secondUnderscore), 10);
+    const roomChannelId    = rest.slice(secondUnderscore + 1);
+
+    const msgContent = interaction.fields.getTextInputValue("message").trim();
+    const imageUrl   = interaction.fields.getTextInputValue("image_url").trim() || undefined;
+
+    // تحقق من المحتوى
+    const hasBadWord = findBadWord(msgContent);
+    const hasLink    = /https?:\/\/|www\./i.test(msgContent);
+    const hasMention = /@(everyone|here)|<@[&!]?\d+>/.test(msgContent);
+    if (hasBadWord) {
+      await interaction.editReply({ content: `❌ الرسالة تحتوي على كلمة محظورة.` });
+      return;
+    }
+    if (hasLink) {
+      await interaction.editReply({ content: `❌ ممنوع نشر لينكات في الإعلان.` });
+      return;
+    }
+    if (hasMention) {
+      await interaction.editReply({ content: `❌ ممنوع وضع منشنات في نص الرسالة.` });
+      return;
+    }
+
+    const guild = interaction.guild!;
+    await startAutoPublish(guild, {
+      userId,
+      username:        interaction.user.username,
+      roomChannelId,
+      message:         msgContent,
+      imageUrl,
+      mentionsPerPost: 0,
+      durationMs:      days * 24 * 60 * 60 * 1000,
+    });
+
+    await interaction.editReply({
+      content: `✅ بدأ النشر التلقائي في متجرك! كل 6 ساعات لمدة **${days}** ${days === 1 ? "يوم" : "أيام"}.`,
+    });
+    return;
   }
 
   } catch (err) {
