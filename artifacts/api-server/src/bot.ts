@@ -667,6 +667,31 @@ async function startAutoPublish(
   });
 }
 
+/**
+ * يوقف جوب نشر تلقائي شغّال لمستخدم معيّن (لو موجود) — بيقفل الـ interval/timeout
+ * وبيحذف الـ webhook المخصص. يرجع true لو كان فيه جوب شغّال واتقفل بنجاح.
+ */
+async function stopAutoPublish(guild: Guild, userId: string): Promise<boolean> {
+  const job = activeAutoPublishes.get(userId);
+  if (!job) return false;
+
+  clearInterval(job.intervalId);
+  clearTimeout(job.endTimeoutId);
+  activeAutoPublishes.delete(userId);
+
+  if (job.webhookClient) {
+    await job.webhookClient.delete().catch(() => {});
+    job.webhookClient.destroy();
+  }
+
+  try {
+    const ch = guild.channels.cache.get(job.roomChannelId) as TextChannel | undefined;
+    await ch?.send(`🛑 <@${userId}> تم إيقاف النشر التلقائي لمتجرك من الإدارة.`);
+  } catch { /* ignore */ }
+
+  return true;
+}
+
 /** بعد تأكيد الدفع: ننتظر الأونر يمنشن الشريك الجديد في الروم */
 const awaitingPartnerMention = new Map<string, {
   purchaseId:    number;
@@ -1807,6 +1832,13 @@ client.once(Events.ClientReady, async () => {
       )
       .addStringOption((o) =>
         o.setName("reason").setDescription("سبب التحذير").setRequired(true)
+      ),
+
+    new SlashCommandBuilder()
+      .setName("stopautopublish")
+      .setDescription("🛑 [أدمن] يوقف النشر التلقائي الشغّال لمتجر معيّن")
+      .addUserOption((o) =>
+        o.setName("user").setDescription("صاحب المتجر").setRequired(true)
       ),
   ];
 
@@ -5793,6 +5825,41 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         ? `✅ تم تحذير <@${targetUser.id}> وتم **إيقاف** متجره (3/3 تحذيرات).`
         : `✅ تم تحذير <@${targetUser.id}> — تحذير **${newWarningCount}/3**.`,
     });
+  }
+
+  // ── /stopautopublish ─────────────────────────────────────────────────────
+  if (interaction.commandName === "stopautopublish") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser("user", true);
+
+    // لو لسه في مرحلة الدفع/الاختيار (مش بدأ ينشر فعلياً) — كنسل الطلب المعلّق كمان
+    const pending = pendingAutoPublishes.get(targetUser.id);
+    if (pending) {
+      clearTimeout(pending.timeoutId);
+      pendingAutoPublishes.delete(targetUser.id);
+    }
+    pendingAutoPublishReady.delete(targetUser.id);
+
+    const guild  = interaction.guild!;
+    const stopped = await stopAutoPublish(guild, targetUser.id);
+
+    if (!stopped && !pending) {
+      await interaction.editReply({ content: `❌ <@${targetUser.id}> مالوش نشر تلقائي شغّال أو معلّق حالياً.` });
+      return;
+    }
+
+    await interaction.editReply({
+      content: `✅ تم إيقاف النشر التلقائي الخاص بـ <@${targetUser.id}>.`,
+    });
+    return;
   }
 
   } // end isChatInputCommand block
