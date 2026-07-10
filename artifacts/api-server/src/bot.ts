@@ -1890,6 +1890,22 @@ client.once(Events.ClientReady, async () => {
       .addUserOption((o) =>
         o.setName("user").setDescription("صاحب المتجر").setRequired(true)
       ),
+
+    new SlashCommandBuilder()
+      .setName("storestatus")
+      .setDescription("👑 [أونر/أدمن] فعّل أو ألغِ تفعيل متجر يدويًا بدون رسوم")
+      .addUserOption((o) =>
+        o.setName("user").setDescription("صاحب المتجر").setRequired(true)
+      )
+      .addStringOption((o) =>
+        o.setName("action")
+          .setDescription("الإجراء")
+          .setRequired(true)
+          .addChoices(
+            { name: "✅ تفعيل",       value: "activate" },
+            { name: "🚫 إلغاء تفعيل", value: "deactivate" },
+          )
+      ),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -5909,6 +5925,89 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     await interaction.editReply({
       content: `✅ تم إيقاف النشر التلقائي الخاص بـ <@${targetUser.id}>.`,
+    });
+    return;
+  }
+
+  // ── /storestatus ─────────────────────────────────────────────────────────
+  if (interaction.commandName === "storestatus") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser("user", true);
+    const action      = interaction.options.getString("action", true) as "activate" | "deactivate";
+
+    const purchase = await db.select().from(purchasesTable)
+      .where(and(eq(purchasesTable.discordUserId, targetUser.id), eq(purchasesTable.status, "completed")))
+      .then((rows) => rows.find((p) => p.discordRoomId));
+
+    if (!purchase) {
+      await interaction.editReply({ content: `❌ <@${targetUser.id}> مالوش متجر نشط.` });
+      return;
+    }
+
+    const wantDeactivate = action === "deactivate";
+    if (purchase.isRoomDeactivated === wantDeactivate) {
+      await interaction.editReply({
+        content: wantDeactivate
+          ? `⚠️ متجر <@${targetUser.id}> متوقف بالفعل.`
+          : `⚠️ متجر <@${targetUser.id}> مفعّل بالفعل.`,
+      });
+      return;
+    }
+
+    // لو في عملية إعادة تفعيل معلّقة (المستخدم دافع أو بينتظر يدفع) الغيها — الأدمن بيتصرف يدوي بدون رسوم
+    const pendingReact = pendingRoomReactivations.get(targetUser.id);
+    if (pendingReact) {
+      clearTimeout(pendingReact.timeoutId);
+      pendingRoomReactivations.delete(targetUser.id);
+    }
+
+    await db.update(purchasesTable)
+      .set({ isRoomDeactivated: wantDeactivate })
+      .where(eq(purchasesTable.id, purchase.id));
+
+    const roomCh = interaction.guild?.channels.cache.get(purchase.discordRoomId!) as TextChannel | undefined;
+    if (roomCh) {
+      await roomCh.permissionOverwrites.edit(targetUser.id, wantDeactivate
+        ? { ViewChannel: false, SendMessages: false, MentionEveryone: false }
+        : { ViewChannel: true,  SendMessages: true,  MentionEveryone: true  }
+      ).catch(() => {});
+
+      const DIV_SS = "ـﮩ════════════════ﮩـ";
+      const gISS   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const statusEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gISS })
+        .setTitle(wantDeactivate ? "🚫 تم إلغاء تفعيل المتجر" : "✅ تم تفعيل المتجر")
+        .setDescription(
+          `<@${targetUser.id}>\n> ${DIV_SS}\n\n` +
+          (wantDeactivate
+            ? `تم إلغاء تفعيل متجرك من قِبل الإدارة **بدون رسوم**.`
+            : `تم إعادة تفعيل متجرك من قِبل الإدارة **بدون رسوم**.`) +
+          `\n> ${DIV_SS}`
+        )
+        .setColor(wantDeactivate ? 0x2b2d31 : 0x00ff88)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gISS });
+
+      const statusFiles: AttachmentBuilder[] = [];
+      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+        statusFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+        statusEmbed.setImage("attachment://dragon_text_banner.webp");
+      }
+
+      await roomCh.send({ content: `<@${targetUser.id}>`, embeds: [statusEmbed], files: statusFiles }).catch(() => {});
+    }
+
+    await interaction.editReply({
+      content: wantDeactivate
+        ? `✅ تم إلغاء تفعيل متجر <@${targetUser.id}> بدون رسوم.`
+        : `✅ تم تفعيل متجر <@${targetUser.id}> بدون رسوم.`,
     });
     return;
   }
