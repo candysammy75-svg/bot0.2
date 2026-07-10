@@ -1107,15 +1107,18 @@ async function getOrCreateStoreWebhook(channel: TextChannel): Promise<import("di
   }
 }
 
-/** بيجيب كل الأعضاء اللي عندهم صلاحية Administrator في السيرفر */
-async function getAdminMemberIds(guild: Guild): Promise<string[]> {
+/** رتبة "مراجعين طلبات المنتج" — بتتضاف تلقائياً لثريد أي طلب منتج جديد */
+const PRODUCT_REQUEST_REVIEWER_ROLE_ID = "1500495148700668136";
+
+/** بيجيب كل الأعضاء اللي عندهم رتبة معينة في السيرفر */
+async function getRoleMemberIds(guild: Guild, roleId: string): Promise<string[]> {
   try {
-    const members = await guild.members.fetch();
-    return members
-      .filter((m) => m.permissions.has(PermissionFlagsBits.Administrator))
-      .map((m) => m.id);
+    const role = await guild.roles.fetch(roleId).catch(() => null);
+    if (!role) return [];
+    if (role.members.size === 0) await guild.members.fetch().catch(() => {});
+    return [...role.members.keys()];
   } catch (err) {
-    logger.error({ err }, "Failed to fetch guild members for admin list");
+    logger.error({ err, roleId }, "Failed to fetch role members");
     return [];
   }
 }
@@ -5406,9 +5409,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       }
     }
 
-    // ضيف الأطراف: العميل، صاحب المتجر، الشريك (لو موجود)، وكل الأدمنز
-    const adminIds = await getAdminMemberIds(guild);
-    const memberIds = new Set<string>([interaction.user.id, storeOwnerId, ...adminIds]);
+    // ضيف الأطراف: العميل، صاحب المتجر، الشريك (لو موجود)، وأعضاء رتبة المراجعة
+    const reviewerIds = await getRoleMemberIds(guild, PRODUCT_REQUEST_REVIEWER_ROLE_ID);
+    const memberIds = new Set<string>([interaction.user.id, storeOwnerId, ...reviewerIds]);
     if (partnerId) memberIds.add(partnerId);
 
     for (const id of memberIds) {
@@ -5462,8 +5465,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (!guild) { await interaction.editReply({ content: "❌ الأمر ده شغال في السيرفر بس." }); return; }
 
     // اطرد العميل وصاحب المتجر والشريك من الثريد — سيبوا الأدمنز بس.
-    // NOTE: لو حد منهم عنده صلاحية Administrator أصلاً، سيبه — القاعدة إن
-    //       اللي يفضل في الثريد بعد القفل هم الأدمنز بس، مش استثناء لأي دور تاني.
+    // NOTE: لو حد منهم عضو في رتبة المراجعة أصلاً، سيبه — القاعدة إن اللي
+    //       يفضل في الثريد بعد القفل هم أعضاء رتبة المراجعة بس.
     const idsToRemove = new Set<string>([record.requesterId, record.storeOwnerId]);
     const [roomPurchase] = await db
       .select({ partnerDiscordUserId: purchasesTable.partnerDiscordUserId })
@@ -5471,9 +5474,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .where(eq(purchasesTable.discordRoomId, record.roomChannelId));
     if (roomPurchase?.partnerDiscordUserId) idsToRemove.add(roomPurchase.partnerDiscordUserId);
 
-    const adminIds = new Set(await getAdminMemberIds(guild));
+    const reviewerIds = new Set(await getRoleMemberIds(guild, PRODUCT_REQUEST_REVIEWER_ROLE_ID));
     for (const id of idsToRemove) {
-      if (adminIds.has(id)) continue; // أدمن — يفضل في الثريد للمراجعة
+      if (reviewerIds.has(id)) continue; // عضو مراجعة — يفضل في الثريد للمراجعة
       await thread.members.remove(id).catch(() => {});
     }
 
@@ -5485,7 +5488,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .set({ status: "closed", closedAt: new Date() })
       .where(eq(productRequestsTable.id, record.id));
 
-    await thread.send({ content: `🔒 تم قفل التكت — التاجر والعميل اتشالوا، متبقّي غير الأدمنز للمراجعة.` }).catch(() => {});
+    await thread.send({ content: `🔒 تم قفل التكت — التاجر والعميل اتشالوا، متبقّي غير رتبة المراجعة.` }).catch(() => {});
     await interaction.editReply({ content: "✅ تم قفل التكت." });
     return;
   }
