@@ -58,8 +58,11 @@ import {
   warningsTable,
   addonPricesTable,
   auctionSchedulesTable,
+  promoCodesTable,
+  promoRedemptionsTable,
+  userPointsTable,
 } from "@workspace/db";
-import { eq, and, ne } from "drizzle-orm";
+import { eq, and, ne, lt, isNull, sql } from "drizzle-orm";
 import { logger } from "./lib/logger";
 import path from "path";
 import fs from "fs";
@@ -883,6 +886,36 @@ async function addWarning(
     .set({ warningCount })
     .where(eq(botUsersTable.discordUserId, discordUserId));
   return { warningCount, banned: false };
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Points Helpers — نظام النقاط (راجع notes/promo-codes.md)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** بيجيب رصيد نقاط اليوزر، وبيعمله صف في الجدول لو مش موجود (رصيد 0). */
+async function getUserPoints(discordUserId: string): Promise<number> {
+  const [row] = await db.select().from(userPointsTable).where(eq(userPointsTable.discordUserId, discordUserId));
+  return row?.points ?? 0;
+}
+
+/**
+ * بيضيف (أو يخصم لو delta سالب) نقاط لليوزر بشكل atomic (upsert + increment
+ * على مستوى الـ DB) عشان يتجنب race conditions لو حصل تحديثين في نفس اللحظة.
+ * الرصيد مبيسمحش ينزل تحت الصفر.
+ */
+async function addUserPoints(discordUserId: string, delta: number): Promise<number> {
+  const [row] = await db
+    .insert(userPointsTable)
+    .values({ discordUserId, points: Math.max(0, delta) })
+    .onConflictDoUpdate({
+      target: userPointsTable.discordUserId,
+      set: {
+        points:    sql`greatest(0, ${userPointsTable.points} + ${delta})`,
+        updatedAt: new Date(),
+      },
+    })
+    .returning();
+  return row?.points ?? 0;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1906,6 +1939,42 @@ client.once(Events.ClientReady, async () => {
             { name: "🚫 إلغاء تفعيل", value: "deactivate" },
           )
       ),
+
+    // ── أوامر أكواد البروموشن (Promo Codes) ──────────────────────────────────
+    new SlashCommandBuilder()
+      .setName("addpromocode")
+      .setDescription("👑 [أونر/أدمن] أنشئ كود خصم جديد")
+      .addStringOption((o) => o.setName("code").setDescription("الكود (بالإنجليزي/أرقام)").setRequired(true))
+      .addIntegerOption((o) => o.setName("value").setDescription("قيمة الكود بالكريدت (صافي، بدون عمولة)").setRequired(true))
+      .addIntegerOption((o) => o.setName("uses").setDescription("عدد مرات الاستخدام المسموحة (افتراضي 1)").setRequired(false)),
+
+    new SlashCommandBuilder()
+      .setName("removepromocode")
+      .setDescription("👑 [أونر/أدمن] احذف/عطّل كود خصم")
+      .addStringOption((o) => o.setName("code").setDescription("الكود").setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName("listpromocodes")
+      .setDescription("👑 [أونر/أدمن] اعرض كل أكواد الخصم"),
+
+    new SlashCommandBuilder()
+      .setName("points")
+      .setDescription("👑 [أونر/أدمن] ضيف أو اخصم نقاط من رصيد يوزر")
+      .addUserOption((o) => o.setName("user").setDescription("اليوزر").setRequired(true))
+      .addStringOption((o) =>
+        o.setName("action")
+          .setDescription("الإجراء")
+          .setRequired(true)
+          .addChoices(
+            { name: "➕ إضافة", value: "add" },
+            { name: "➖ خصم",   value: "remove" },
+          )
+      )
+      .addIntegerOption((o) => o.setName("amount").setDescription("الكمية").setRequired(true)),
+
+    new SlashCommandBuilder()
+      .setName("mypoints")
+      .setDescription("شوف رصيد نقاطك"),
   ];
 
   const rest = new REST({ version: "10" }).setToken(TOKEN);
@@ -4939,6 +5008,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setCustomId(`get_transfer_cmd_${purchase.id}`)
       .setLabel("📋 أمر التحويل")
       .setStyle(ButtonStyle.Secondary);
+    const promoBtn  = new ButtonBuilder()
+      .setCustomId(`open_promo_modal_${purchase.id}`)
+      .setLabel("🎟️ عندي كود خصم")
+      .setStyle(ButtonStyle.Success);
 
     const ticketEmbed = new EmbedBuilder()
       .setTitle(`🎟️ تذكرة شراء — ${room.name}`)
@@ -4952,14 +5025,15 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `1️⃣ انسخ الأمر فوق وبعثه في سيرفر ProBot\n` +
         `2️⃣ بعد التحويل، البوت هيتأكد تلقائياً\n` +
-        `3️⃣ بعدين اكتب اسم الروم اللي عايزه هنا`
+        `3️⃣ بعدين اكتب اسم الروم اللي عايزه هنا\n\n` +
+        `🎟️ لو عندك كود خصم، اضغط الزرار تحت **قبل** التحويل.`
       )
       .setColor(0xffd700);
 
     await ticketChannel.send({
       content:    `<@${userId}>`,
       embeds:     [ticketEmbed],
-      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(getCmdBtn, closeBtn)],
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(getCmdBtn, promoBtn, closeBtn)],
     });
 
     await interaction.editReply({ content: `✅ تم إنشاء تذكرتك! اضغط هنا: <#${ticketChannel.id}>` });
@@ -4980,6 +5054,166 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const plainCmd = `C <@${OWNER_ID}> ${amount}`;
     await interaction.reply({ content: plainCmd, flags: MessageFlags.Ephemeral });
     await interaction.followUp({ content: `\`${plainCmd}\``, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  // ── زرار فتح مودال كود الخصم (open_promo_modal_*) ───────────────────────
+  // NOTE: بيفتح مودال بسيط فيه خانة نص واحدة لإدخال الكود.
+  //       التحقق والتطبيق الفعلي بيحصل في modal_promo_code_* handler.
+  if (interaction.isButton() && interaction.customId.startsWith("open_promo_modal_")) {
+    const purchaseId = parseInt(interaction.customId.replace("open_promo_modal_", ""), 10);
+
+    const modal = new ModalBuilder()
+      .setCustomId(`modal_promo_code_${purchaseId}`)
+      .setTitle("🎟️ كود الخصم");
+
+    const codeInput = new TextInputBuilder()
+      .setCustomId("promo_code_input")
+      .setLabel("اكتب الكود هنا")
+      .setStyle(TextInputStyle.Short)
+      .setRequired(true)
+      .setMaxLength(50);
+
+    modal.addComponents(new ActionRowBuilder<TextInputBuilder>().addComponents(codeInput));
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── مودال كود الخصم (modal_promo_code_*) ─────────────────────────────────
+  // NOTE: بيتحقق من:
+  //   1. إن التذكرة لسه pending (مش دفعت أو اتلغت أو خلصت).
+  //   2. إن اللي بيستخدم الزرار هو صاحب التذكرة.
+  //   3. إن الكود موجود، شغال (isActive)، ومعندوش استخدامات زيادة عن maxUses.
+  //   4. إن التذكرة دي معملهاش خصم قبل كده (مينفعش تطبق كودين).
+  // بعد التحقق: بيحسب الخصم، لو فيه فايض بيتحول نقاط، وبيحدّث totalPrice/transferCommand.
+  // لو الخصم غطى السعر بالكامل → التذكرة بتتحط على "awaiting_room_name" على طول من غير ما ProBot يتحقق من حاجة.
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("modal_promo_code_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const purchaseId = parseInt(interaction.customId.replace("modal_promo_code_", ""), 10);
+    const rawCode     = interaction.fields.getTextInputValue("promo_code_input").trim().toUpperCase();
+    const userId      = interaction.user.id;
+
+    const [purchase] = await db.select().from(purchasesTable).where(eq(purchasesTable.id, purchaseId));
+    if (!purchase) {
+      await interaction.editReply({ content: "❌ التذكرة مش موجودة." });
+      return;
+    }
+    if (purchase.discordUserId !== userId) {
+      await interaction.editReply({ content: "❌ التذكرة دي مش ليك." });
+      return;
+    }
+    if (purchase.status !== "pending") {
+      await interaction.editReply({ content: "❌ مينفعش تستخدم كود بعد إرسال التحويل أو بعد ما التذكرة خلصت." });
+      return;
+    }
+    if (purchase.appliedPromoCode) {
+      await interaction.editReply({ content: `⚠️ انت مستخدم كود \`${purchase.appliedPromoCode}\` بالفعل على التذكرة دي.` });
+      return;
+    }
+
+    const [promo] = await db.select().from(promoCodesTable).where(eq(promoCodesTable.code, rawCode));
+    if (!promo || !promo.isActive || promo.usedCount >= promo.maxUses) {
+      await interaction.editReply({ content: `❌ الكود \`${rawCode}\` مش موجود أو خلص استخدامه.` });
+      return;
+    }
+    if (promo.type !== "discount") {
+      await interaction.editReply({ content: "❌ الكود ده مش كود خصم." });
+      return;
+    }
+
+    const [room] = await db.select().from(roomsTable).where(eq(roomsTable.id, purchase.roomId));
+    if (!room) {
+      await interaction.editReply({ content: "❌ حصل خطأ في بيانات الروم." });
+      return;
+    }
+
+    const netPrice      = Number(room.price);
+    const discount      = Math.min(promo.value, netPrice);
+    const remainingNet  = netPrice - discount;
+    const pointsAwarded = promo.value - discount;
+    const newTransferAmt = remainingNet > 0 ? calcTransferAmount(remainingNet) : 0;
+    const newTransferCommand = remainingNet > 0 ? `C <@${OWNER_ID}> ${newTransferAmt}` : null;
+
+    // ── تطبيق ذري (atomic) عشان نمنع race condition لو حد ضغط الزرار مرتين
+    //    بسرعة أو استخدم نفس الكود من تكتين في نفس اللحظة ──────────────────
+    // 1. حجز استخدام الكود: بيتحدث بس لو لسه في حدود maxUses.
+    const [reservedPromo] = await db.update(promoCodesTable)
+      .set({ usedCount: sql`${promoCodesTable.usedCount} + 1` })
+      .where(and(eq(promoCodesTable.id, promo.id), lt(promoCodesTable.usedCount, promo.maxUses), eq(promoCodesTable.isActive, true)))
+      .returning();
+
+    if (!reservedPromo) {
+      await interaction.editReply({ content: `❌ الكود \`${rawCode}\` خلص استخدامه لسه فيه.` });
+      return;
+    }
+    if (reservedPromo.usedCount >= reservedPromo.maxUses) {
+      await db.update(promoCodesTable).set({ isActive: false }).where(eq(promoCodesTable.id, promo.id));
+    }
+
+    // 2. حجز التذكرة نفسها: بيتحدث بس لو لسه pending ومفيهاش كود متطبق قبل كده.
+    const [reservedPurchase] = await db.update(purchasesTable)
+      .set({
+        totalPrice:       String(newTransferAmt),
+        transferCommand:  newTransferCommand,
+        appliedPromoCode: rawCode,
+        discountAmount:   discount,
+        // لو الخصم غطى السعر بالكامل — مفيش داعي لـ ProBot، ننتقل لمرحلة اسم الروم على طول
+        status:           remainingNet === 0 ? "awaiting_room_name" : purchase.status,
+      })
+      .where(and(
+        eq(purchasesTable.id, purchase.id),
+        eq(purchasesTable.status, "pending"),
+        isNull(purchasesTable.appliedPromoCode),
+      ))
+      .returning();
+
+    if (!reservedPurchase) {
+      // فشل حجز التذكرة (اتطبق كود عليها بالفعل أو اتغيرت حالتها) — رجّع الكود زي ما كان
+      await db.update(promoCodesTable)
+        .set({ usedCount: sql`${promoCodesTable.usedCount} - 1`, isActive: true })
+        .where(eq(promoCodesTable.id, promo.id));
+      await interaction.editReply({ content: "❌ التذكرة دي اتطبق عليها كود بالفعل أو حالتها اتغيرت." });
+      return;
+    }
+
+    await db.insert(promoRedemptionsTable).values({
+      promoCodeId:     promo.id,
+      discordUserId:   userId,
+      purchaseId:      purchase.id,
+      discountApplied: discount,
+      pointsAwarded,
+    });
+
+    if (pointsAwarded > 0) {
+      await addUserPoints(userId, pointsAwarded);
+    }
+
+    const ticketChannel = interaction.channel as TextChannel | null;
+
+    if (remainingNet === 0) {
+      await ticketChannel?.send({
+        content:
+          `<@${userId}>\n` +
+          `🎟️ تم تطبيق كود \`${rawCode}\` — الخصم غطّى سعر المتجر بالكامل! ✅\n` +
+          (pointsAwarded > 0 ? `💠 وتم تحويل الباقي (**${pointsAwarded.toLocaleString()}**) لنقاط في حسابك.\n` : "") +
+          `\n**مفيش داعي تدفع حاجة.** اكتب اسم الروم اللي عايزه هنا ⬇️`,
+      }).catch(() => {});
+    } else {
+      await ticketChannel?.send({
+        content:
+          `<@${userId}>\n` +
+          `🎟️ تم تطبيق كود \`${rawCode}\` — خصم **${discount.toLocaleString()}** كريدت! ✅\n` +
+          (pointsAwarded > 0 ? `💠 وتم تحويل الباقي (**${pointsAwarded.toLocaleString()}**) لنقاط في حسابك.\n` : "") +
+          `\n📋 **أمر التحويل الجديد:**\n\`${newTransferCommand}\`\n` +
+          `💰 المبلغ الجديد المطلوب (مع عمولة ProBot 5%): \`${newTransferAmt}\``,
+      }).catch(() => {});
+    }
+
+    await interaction.editReply({
+      content: remainingNet === 0
+        ? `✅ تم تطبيق الكود! المتجر اتغطى بالكامل، اكتب اسم الروم في التذكرة.`
+        : `✅ تم تطبيق الكود! السعر الجديد بعد الخصم: **${newTransferAmt.toLocaleString()}** كريدت.`,
+    });
     return;
   }
 
@@ -6009,6 +6243,141 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         ? `✅ تم إلغاء تفعيل متجر <@${targetUser.id}> بدون رسوم.`
         : `✅ تم تفعيل متجر <@${targetUser.id}> بدون رسوم.`,
     });
+    return;
+  }
+
+  // ── /addpromocode ────────────────────────────────────────────────────────
+  if (interaction.commandName === "addpromocode") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const rawCode = interaction.options.getString("code", true).trim().toUpperCase();
+    const value   = interaction.options.getInteger("value", true);
+    const uses    = interaction.options.getInteger("uses") ?? 1;
+
+    if (!rawCode || /\s/.test(rawCode)) {
+      await interaction.editReply({ content: "❌ الكود لازم يكون كلمة واحدة بدون فراغات." });
+      return;
+    }
+    if (value <= 0) {
+      await interaction.editReply({ content: "❌ القيمة لازم تكون أكبر من صفر." });
+      return;
+    }
+
+    const [existing] = await db.select().from(promoCodesTable).where(eq(promoCodesTable.code, rawCode));
+    if (existing) {
+      await interaction.editReply({ content: `❌ الكود \`${rawCode}\` موجود بالفعل.` });
+      return;
+    }
+
+    await db.insert(promoCodesTable).values({
+      code:      rawCode,
+      type:      "discount",
+      value,
+      maxUses:   Math.max(1, uses),
+      createdBy: interaction.user.id,
+    });
+
+    await interaction.editReply({
+      content:
+        `✅ تم إنشاء كود الخصم \`${rawCode}\`\n` +
+        `> 💰 القيمة: **${value.toLocaleString()}** كريدت\n` +
+        `> 🔁 عدد مرات الاستخدام: **${Math.max(1, uses)}**`,
+    });
+    return;
+  }
+
+  // ── /removepromocode ─────────────────────────────────────────────────────
+  if (interaction.commandName === "removepromocode") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const rawCode = interaction.options.getString("code", true).trim().toUpperCase();
+    const [promo] = await db.select().from(promoCodesTable).where(eq(promoCodesTable.code, rawCode));
+    if (!promo) {
+      await interaction.editReply({ content: `❌ الكود \`${rawCode}\` مش موجود.` });
+      return;
+    }
+
+    await db.update(promoCodesTable).set({ isActive: false }).where(eq(promoCodesTable.id, promo.id));
+    await interaction.editReply({ content: `✅ تم تعطيل الكود \`${rawCode}\`.` });
+    return;
+  }
+
+  // ── /listpromocodes ───────────────────────────────────────────────────────
+  if (interaction.commandName === "listpromocodes") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const codes = await db.select().from(promoCodesTable).orderBy(promoCodesTable.id);
+    if (codes.length === 0) {
+      await interaction.editReply({ content: "📭 مفيش أكواد خصم لسه." });
+      return;
+    }
+
+    const lines = codes.map((c) =>
+      `${c.isActive ? "🟢" : "🔴"} \`${c.code}\` — 💰 ${c.value.toLocaleString()} | 🔁 ${c.usedCount}/${c.maxUses}`
+    );
+    await interaction.editReply({ content: lines.join("\n").slice(0, 1900) });
+    return;
+  }
+
+  // ── /points (إضافة/خصم يدوي من أدمن) ────────────────────────────────────
+  if (interaction.commandName === "points") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const targetUser = interaction.options.getUser("user", true);
+    const action      = interaction.options.getString("action", true) as "add" | "remove";
+    const amount      = interaction.options.getInteger("amount", true);
+
+    if (amount <= 0) {
+      await interaction.editReply({ content: "❌ الكمية لازم تكون أكبر من صفر." });
+      return;
+    }
+
+    const delta      = action === "add" ? amount : -amount;
+    const newBalance = await addUserPoints(targetUser.id, delta);
+
+    await interaction.editReply({
+      content:
+        (action === "add"
+          ? `✅ تم إضافة **${amount.toLocaleString()}** نقطة لـ <@${targetUser.id}>.`
+          : `✅ تم خصم **${amount.toLocaleString()}** نقطة من <@${targetUser.id}>.`) +
+        `\n💠 رصيده الحالي: **${newBalance.toLocaleString()}** نقطة.`,
+    });
+    return;
+  }
+
+  // ── /mypoints ─────────────────────────────────────────────────────────────
+  if (interaction.commandName === "mypoints") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const balance = await getUserPoints(interaction.user.id);
+    await interaction.editReply({ content: `💠 رصيدك من النقاط: **${balance.toLocaleString()}** نقطة.` });
     return;
   }
 

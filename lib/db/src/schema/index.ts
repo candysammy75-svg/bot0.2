@@ -72,6 +72,8 @@ export const purchasesTable = pgTable("purchases", {
   roomWarningCount:     integer("room_warning_count").notNull().default(0),
   isRoomDeactivated:    boolean("is_room_deactivated").notNull().default(false),
   partnerDiscordUserId: text("partner_discord_user_id"),                        // Discord ID شريك الروم (واحد بس)
+  appliedPromoCode:     text("applied_promo_code"),        // كود الخصم المطبّق على التذكرة دي (لو فيه)
+  discountAmount:       integer("discount_amount").notNull().default(0), // قيمة الخصم الصافية المطبّقة
   createdAt:        timestamp("created_at").defaultNow(),
   updatedAt:        timestamp("updated_at").defaultNow(),
 });
@@ -188,3 +190,67 @@ export const auctionSchedulesTable = pgTable("auction_schedules", {
   createdAt:       timestamp("created_at").defaultNow(),
 });
 export type AuctionSchedule = typeof auctionSchedulesTable.$inferSelect;
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  promo_codes — أكواد البروموشن
+//  NOTE: نوعين مخطط لهم (راجع notes/promo-codes.md للتفاصيل الكاملة):
+//    • "discount"  (شغال دلوقتي) — كود بقيمة كريدت معينة، بيتطبق على سعر
+//      المتجر عند الشراء. لو قيمة الكود أكبر من سعر المتجر، الفرق بيتحول
+//      لنقاط (points) في حساب المستخدم.
+//    • "free_week" (لسه هيتعمل) — كود بيدي أسبوع مجاني في نوع متجر معين،
+//      بيتدي للناس اللي بتجيب إنفايتس وعندها متجر.
+//
+//  value: القيمة الصافية بالكريدت (بدون عمولة ProBot) — دايماً بتتفسر
+//         حسب "type". للـ discount هي قيمة الخصم الكاملة.
+//  maxUses / usedCount: بيتحكموا في عدد مرات استخدام الكود (افتراضي مرة واحدة).
+//  isActive: بيتقفل تلقائي لما usedCount توصل maxUses، أو يدوي بالأدمن.
+// ══════════════════════════════════════════════════════════════════════════════
+export const promoCodesTable = pgTable("promo_codes", {
+  id:            serial("id").primaryKey(),
+  code:          text("code").notNull().unique(),        // بيتخزن دايماً UPPERCASE
+  type:          text("type").notNull().default("discount"), // 'discount' | 'free_week' (مش متفعل لسه)
+  value:         integer("value").notNull(),              // القيمة الصافية بالكريدت
+  roomTypeId:    integer("room_type_id"),                 // للاستخدام المستقبلي مع free_week (تحديد نوع متجر معين)
+  maxUses:       integer("max_uses").notNull().default(1),
+  usedCount:     integer("used_count").notNull().default(0),
+  isActive:      boolean("is_active").notNull().default(true),
+  createdBy:     text("created_by").notNull(),             // Discord ID للأدمن اللي عمل الكود
+  createdAt:     timestamp("created_at").defaultNow(),
+});
+export const insertPromoCodeSchema = createInsertSchema(promoCodesTable).omit({
+  id: true, createdAt: true, usedCount: true,
+});
+export type InsertPromoCode = z.infer<typeof insertPromoCodeSchema>;
+export type PromoCode = typeof promoCodesTable.$inferSelect;
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  promo_redemptions — سجل استخدام الأكواد
+//  NOTE: بيتسجل صف لكل مرة كود اتستخدم فيها، عشان نمنع نفس اليوزر يستخدم
+//        نفس الكود مرتين على نفس التذكرة، ولعمل تدقيق (audit) لو حصل خلاف.
+// ══════════════════════════════════════════════════════════════════════════════
+export const promoRedemptionsTable = pgTable("promo_redemptions", {
+  id:              serial("id").primaryKey(),
+  promoCodeId:     integer("promo_code_id").notNull(),
+  discordUserId:   text("discord_user_id").notNull(),
+  purchaseId:      integer("purchase_id"),                // التذكرة اللي اتطبق فيها الكود
+  discountApplied: integer("discount_applied").notNull().default(0),
+  pointsAwarded:   integer("points_awarded").notNull().default(0),
+  createdAt:       timestamp("created_at").defaultNow(),
+});
+export type PromoRedemption = typeof promoRedemptionsTable.$inferSelect;
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  user_points — رصيد النقاط
+//  NOTE: النقاط دي عملة تانية غير رصيد المنشنات (offers/here/everyone في
+//        bot_users). بتتزود من فرق كود الخصم (لو قيمته أكبر من سعر المتجر)،
+//        أو يدوي بالأدمن عن طريق /points.
+//        الاستخدام المستقبلي: شراء منشنات أو حاجات تانية بالنقاط (لسه ماتعملش
+//        — راجع notes/promo-codes.md).
+// ══════════════════════════════════════════════════════════════════════════════
+export const userPointsTable = pgTable("user_points", {
+  id:            serial("id").primaryKey(),
+  discordUserId: text("discord_user_id").notNull().unique(),
+  points:        integer("points").notNull().default(0),
+  updatedAt:     timestamp("updated_at").defaultNow(),
+});
+export type UserPoints = typeof userPointsTable.$inferSelect;
