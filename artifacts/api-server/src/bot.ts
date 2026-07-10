@@ -5010,7 +5010,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setStyle(ButtonStyle.Secondary);
     const promoBtn  = new ButtonBuilder()
       .setCustomId(`open_promo_modal_${purchase.id}`)
-      .setLabel("🎟️ عندي كود خصم")
+      .setLabel("عندي كود خصم")
+      .setEmoji("1524963455797297152")
       .setStyle(ButtonStyle.Success);
 
     const ticketEmbed = new EmbedBuilder()
