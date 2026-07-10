@@ -6961,7 +6961,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
     if (hasLink) {
-      await interaction.editReply({ content: `❌ ممنوع نشر لينكات في الإعلان.` });
+      await interaction.editReply({ content: `❌ ممنوع نشر لينكات في الرساله.` });
       return;
     }
     if (hasMention) {
