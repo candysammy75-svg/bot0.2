@@ -15,7 +15,7 @@
  * ╚══════════════════════════════════════════════════════════════════════╝
  */
 
-import { pgTable, text, serial, integer, boolean, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -254,3 +254,27 @@ export const userPointsTable = pgTable("user_points", {
   updatedAt:     timestamp("updated_at").defaultNow(),
 });
 export type UserPoints = typeof userPointsTable.$inferSelect;
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  product_requests — تكتات "طلب المنتج"
+//  NOTE: بتتعمل لما عميل يضغط زرار "طلب المنتج" تحت رسالة صاحب متجر.
+//        ticketNumber: عداد مستقل لكل متجر (roomChannelId) — بيبدأ من 1.
+//        status: 'open' → 'closed' (لما الأدمن يقفل التكت من الثريد).
+//        threadId: الثريد اللي اتعمل جوه شانل المتجر للمراجعة.
+// ══════════════════════════════════════════════════════════════════════════════
+export const productRequestsTable = pgTable("product_requests", {
+  id:                serial("id").primaryKey(),
+  roomChannelId:     text("room_channel_id").notNull(),
+  ticketNumber:      integer("ticket_number").notNull(),
+  threadId:          text("thread_id").notNull(),
+  requesterId:       text("requester_id").notNull(),
+  requesterUsername: text("requester_username").notNull(),
+  storeOwnerId:      text("store_owner_id").notNull(),
+  status:            text("status").notNull().default("open"), // 'open' | 'closed'
+  createdAt:         timestamp("created_at").defaultNow(),
+  closedAt:          timestamp("closed_at"),
+}, (table) => [
+  // بيمنع تكرار نفس رقم التكت لنفس المتجر لو حصل ضغط متزامن على الزرار
+  unique("product_requests_room_ticket_unique").on(table.roomChannelId, table.ticketNumber),
+]);
+export type ProductRequest = typeof productRequestsTable.$inferSelect;

@@ -1,0 +1,1 @@
+- [Dragon Shop Bot conventions](dragon-bot-notes.md) — single giant bot.ts handles Discord logic; "room channel" == purchased store; admins = Administrator permission, not a fixed role.

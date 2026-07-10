@@ -61,6 +61,7 @@ import {
   promoCodesTable,
   promoRedemptionsTable,
   userPointsTable,
+  productRequestsTable,
 } from "@workspace/db";
 import { eq, and, ne, lt, isNull, sql } from "drizzle-orm";
 import { logger } from "./lib/logger";
@@ -1068,6 +1069,28 @@ async function revokeMentionRoleWithCooldown(
     }, cooldownMs);
   } catch (err) {
     logger.error({ err, userId }, "Failed to revoke mention role for cooldown");
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  Product Requests — تكتات "طلب المنتج"
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** بيرجع رقم مبطن بأصفار لـ 3 خانات — مثال: 1 → "001" */
+function padTicketNumber(n: number): string {
+  return String(n).padStart(3, "0");
+}
+
+/** بيجيب كل الأعضاء اللي عندهم صلاحية Administrator في السيرفر */
+async function getAdminMemberIds(guild: Guild): Promise<string[]> {
+  try {
+    const members = await guild.members.fetch();
+    return members
+      .filter((m) => m.permissions.has(PermissionFlagsBits.Administrator))
+      .map((m) => m.id);
+  } catch (err) {
+    logger.error({ err }, "Failed to fetch guild members for admin list");
+    return [];
   }
 }
 
@@ -3053,14 +3076,27 @@ client.on(Events.MessageCreate, async (message: Message) => {
     // NOTE: الفحص بيتم في آخر الـ isRoomChannel block بعد كل مودريشن
     //       يعني الرسائل اللي اتحذفت مش هيتبعت بعدها صورة
     const ownerAutoLines = activeAutoLines.get(roomPurchase!.ownerId);
+    const isRoomOwner   = userId === roomPurchase!.ownerId;
+    const isRoomPartner = roomPurchase!.partnerDiscordUserId != null && userId === roomPurchase!.partnerDiscordUserId;
     if (ownerAutoLines) {
-      const isRoomOwner   = userId === roomPurchase!.ownerId;
-      const isRoomPartner = roomPurchase!.partnerDiscordUserId != null && userId === roomPurchase!.partnerDiscordUserId;
       if (isRoomOwner || isRoomPartner) {
         await channel.send({
           files: [new AttachmentBuilder(ownerAutoLines.imageBuffer, { name: ownerAutoLines.imageName })],
         }).catch(() => {});
       }
+    }
+
+    // ── زرار "طلب المنتج" تحت كل رسالة من صاحب المتجر (أو شريكه) ─────────
+    // NOTE: بيتحط تحت أي رسالة (نصية أو صورة) من الأونر/الشريك في الروم
+    //       عشان العميل يقدر يفتح تكت مراجعة (ثريد) بضغطة زرار.
+    if (isRoomOwner || isRoomPartner) {
+      const requestProductRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`request_product_${channel.id}`)
+          .setLabel("🛒 طلب المنتج")
+          .setStyle(ButtonStyle.Success),
+      );
+      await message.reply({ components: [requestProductRow] }).catch(() => {});
     }
   }
 
@@ -5215,6 +5251,188 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         ? `✅ تم تطبيق الكود! المتجر اتغطى بالكامل، اكتب اسم الروم في التذكرة.`
         : `✅ تم تطبيق الكود! السعر الجديد بعد الخصم: **${newTransferAmt.toLocaleString()}** كريدت.`,
     });
+    return;
+  }
+
+  // ── زرار "طلب المنتج" (request_product_<roomChannelId>) ──────────────────
+  // NOTE: بيفتح ثريد خاص بين العميل وصاحب المتجر (وشريكه لو موجود) وكل
+  //       الأدمنز، عشان مراجعة الطلب. كل متجر ليه عداد تكتات مستقل.
+  if (interaction.isButton() && interaction.customId.startsWith("request_product_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const roomChannelId = interaction.customId.replace("request_product_", "");
+    const guild = interaction.guild;
+    if (!guild) { await interaction.editReply({ content: "❌ الأمر ده شغال في السيرفر بس." }); return; }
+
+    const [roomPurchase] = await db
+      .select()
+      .from(purchasesTable)
+      .where(
+        and(
+          eq(purchasesTable.discordRoomId, roomChannelId),
+          eq(purchasesTable.status, "completed"),
+        ),
+      );
+
+    if (!roomPurchase) {
+      await interaction.editReply({ content: "❌ المتجر ده مش موجود أو اتقفل." });
+      return;
+    }
+
+    const storeOwnerId = roomPurchase.discordUserId;
+    const partnerId    = roomPurchase.partnerDiscordUserId;
+
+    if (interaction.user.id === storeOwnerId || interaction.user.id === partnerId) {
+      await interaction.editReply({ content: "❌ مينفعش تطلب من متجرك بنفسك." });
+      return;
+    }
+
+    const roomChannel = guild.channels.cache.get(roomChannelId) as TextChannel | undefined;
+    if (!roomChannel) {
+      await interaction.editReply({ content: "❌ متلاقيش شانل المتجر." });
+      return;
+    }
+
+    // احسب رقم التكت — عداد مستقل لكل متجر (roomChannelId).
+    // NOTE: في يونيك كونسترينت على (roomChannelId, ticketNumber) في الـ DB،
+    //       فلو حصل تعارض بسبب ضغط متزامن بنعيد المحاولة برقم أعلى.
+    let thread: import("discord.js").ThreadChannel | null = null;
+    let ticketNumber = 0;
+    let paddedNumber = "";
+    const MAX_ATTEMPTS = 5;
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      const existingCount = await db
+        .select({ id: productRequestsTable.id })
+        .from(productRequestsTable)
+        .where(eq(productRequestsTable.roomChannelId, roomChannelId))
+        .then((rows) => rows.length);
+      ticketNumber = existingCount + 1;
+      paddedNumber = padTicketNumber(ticketNumber);
+
+      if (!thread) {
+        thread = await roomChannel.threads
+          .create({
+            name: `طلب-${paddedNumber}`,
+            type: ChannelType.PrivateThread,
+            invitable: false,
+            reason: `طلب منتج من ${interaction.user.username}`,
+          })
+          .catch((err) => {
+            logger.error({ err, roomChannelId }, "Failed to create product request thread");
+            return null;
+          });
+        if (!thread) {
+          await interaction.editReply({ content: "❌ فشل إنشاء ثريد المراجعة — جرب تاني." });
+          return;
+        }
+      } else {
+        await thread.setName(`طلب-${paddedNumber}`).catch(() => {});
+      }
+
+      try {
+        await db.insert(productRequestsTable).values({
+          roomChannelId,
+          ticketNumber,
+          threadId:          thread.id,
+          requesterId:       interaction.user.id,
+          requesterUsername: interaction.user.username,
+          storeOwnerId,
+          status:            "open",
+        });
+        break; // نجح الإدراج — كمّل
+      } catch (err) {
+        if (attempt === MAX_ATTEMPTS - 1) {
+          await thread.delete("Failed to allocate ticket number").catch(() => {});
+          logger.error({ err, roomChannelId }, "Failed to allocate product request ticket number");
+          await interaction.editReply({ content: "❌ فشل حجز رقم التكت — جرب تاني." });
+          return;
+        }
+        // تعارض على رقم التكت — أعد المحاولة برقم أعلى في نفس الثريد
+      }
+    }
+
+    // ضيف الأطراف: العميل، صاحب المتجر، الشريك (لو موجود)، وكل الأدمنز
+    const adminIds = await getAdminMemberIds(guild);
+    const memberIds = new Set<string>([interaction.user.id, storeOwnerId, ...adminIds]);
+    if (partnerId) memberIds.add(partnerId);
+
+    for (const id of memberIds) {
+      await thread!.members.add(id).catch(() => {});
+    }
+
+    const closeRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`close_product_request_${thread.id}`)
+        .setLabel("🔒 قفل التكت")
+        .setStyle(ButtonStyle.Danger),
+    );
+
+    const requestEmbed = new EmbedBuilder()
+      .setTitle(`📦 طلب منتج #${paddedNumber}`)
+      .setDescription(
+        `العميل: <@${interaction.user.id}>\n` +
+        `صاحب المتجر: <@${storeOwnerId}>${partnerId ? `\nالشريك: <@${partnerId}>` : ""}\n\n` +
+        `اتفقوا على الطلب هنا، وبعد ما تخلصوا اضغطوا "قفل التكت" عشان الأدمن يراجعه.`,
+      )
+      .setColor(0x00c8ff);
+
+    await thread.send({
+      content: `<@${interaction.user.id}> <@${storeOwnerId}>${partnerId ? ` <@${partnerId}>` : ""}`,
+      embeds: [requestEmbed],
+      components: [closeRow],
+    }).catch(() => {});
+
+    await interaction.editReply({ content: `✅ تم فتح تكت الطلب: ${thread}` });
+    return;
+  }
+
+  // ── زرار "قفل التكت" (close_product_request_<threadId>) ─────────────────
+  // NOTE: بيطرد العميل وصاحب المتجر (والشريك) من الثريد، ويسيب بس الأدمنز
+  //       عشان يراجعوا الطلب، وبيغير اسم الثريد لـ closed-XXX.
+  if (interaction.isButton() && interaction.customId.startsWith("close_product_request_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const threadId = interaction.customId.replace("close_product_request_", "");
+    const [record] = await db
+      .select()
+      .from(productRequestsTable)
+      .where(eq(productRequestsTable.threadId, threadId));
+
+    if (!record) { await interaction.editReply({ content: "❌ التكت ده مش موجود." }); return; }
+    if (record.status === "closed") { await interaction.editReply({ content: "❌ التكت ده اتقفل بالفعل." }); return; }
+
+    const thread = interaction.channel;
+    if (!thread || !thread.isThread()) { await interaction.editReply({ content: "❌ الزرار ده شغال جوه الثريد بس." }); return; }
+    const guild = interaction.guild;
+    if (!guild) { await interaction.editReply({ content: "❌ الأمر ده شغال في السيرفر بس." }); return; }
+
+    // اطرد العميل وصاحب المتجر والشريك من الثريد — سيبوا الأدمنز بس.
+    // NOTE: لو حد منهم عنده صلاحية Administrator أصلاً، سيبه — القاعدة إن
+    //       اللي يفضل في الثريد بعد القفل هم الأدمنز بس، مش استثناء لأي دور تاني.
+    const idsToRemove = new Set<string>([record.requesterId, record.storeOwnerId]);
+    const [roomPurchase] = await db
+      .select({ partnerDiscordUserId: purchasesTable.partnerDiscordUserId })
+      .from(purchasesTable)
+      .where(eq(purchasesTable.discordRoomId, record.roomChannelId));
+    if (roomPurchase?.partnerDiscordUserId) idsToRemove.add(roomPurchase.partnerDiscordUserId);
+
+    const adminIds = new Set(await getAdminMemberIds(guild));
+    for (const id of idsToRemove) {
+      if (adminIds.has(id)) continue; // أدمن — يفضل في الثريد للمراجعة
+      await thread.members.remove(id).catch(() => {});
+    }
+
+    const paddedNumber = padTicketNumber(record.ticketNumber);
+    await thread.setName(`closed-${paddedNumber}`).catch(() => {});
+
+    await db
+      .update(productRequestsTable)
+      .set({ status: "closed", closedAt: new Date() })
+      .where(eq(productRequestsTable.id, record.id));
+
+    await thread.send({ content: `🔒 تم قفل التكت — التاجر والعميل اتشالوا، متبقّي غير الأدمنز للمراجعة.` }).catch(() => {});
+    await interaction.editReply({ content: "✅ تم قفل التكت." });
     return;
   }
 
