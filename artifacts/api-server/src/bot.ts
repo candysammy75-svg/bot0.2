@@ -1114,9 +1114,17 @@ const PRODUCT_REQUEST_REVIEWER_ROLE_ID = "1500495148700668136";
 async function getRoleMemberIds(guild: Guild, roleId: string): Promise<string[]> {
   try {
     const role = await guild.roles.fetch(roleId).catch(() => null);
-    if (!role) return [];
-    if (role.members.size === 0) await guild.members.fetch().catch(() => {});
-    return [...role.members.keys()];
+    if (!role) {
+      logger.warn({ roleId }, "getRoleMemberIds: role not found in guild");
+      return [];
+    }
+    // لازم كل الأعضاء يكونوا متكاشين عشان role.members يرجع كله صح
+    await guild.members.fetch().catch((err) => {
+      logger.error({ err }, "getRoleMemberIds: failed to fetch guild members");
+    });
+    const ids = [...role.members.keys()];
+    logger.info({ roleId, roleName: role.name, count: ids.length }, "getRoleMemberIds: resolved role members");
+    return ids;
   } catch (err) {
     logger.error({ err, roleId }, "Failed to fetch role members");
     return [];
