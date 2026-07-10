@@ -3093,7 +3093,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const requestProductRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
           .setCustomId(`request_product_${channel.id}`)
-          .setLabel("🛒 طلب المنتج")
+          .setEmoji({ id: "1524536738360328347", name: "rfn", animated: true })
+          .setLabel("طلب المنتج")
           .setStyle(ButtonStyle.Success),
       );
       await message.reply({ components: [requestProductRow] }).catch(() => {});
