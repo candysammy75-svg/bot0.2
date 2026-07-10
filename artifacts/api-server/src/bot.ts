@@ -1081,6 +1081,32 @@ function padTicketNumber(n: number): string {
   return String(n).padStart(3, "0");
 }
 
+/** كاش بسيط للـ webhook بتاع كل شانل — عشان منعملش fetch/create في كل رسالة */
+const storeWebhookCache = new Map<string, import("discord.js").Webhook>();
+
+/**
+ * بيجيب (أو يعمل) الـ webhook المخصص لتشفير رسائل صاحب المتجر في شانل معين.
+ * NOTE: بيتخزن في كاش في الميموري — لو الـ webhook اتمسح من ديسكورد يدوياً
+ *       البوت هيفشل في الإرسال (catch بيرجع null) ويرجع لأسلوب الرد العادي.
+ */
+async function getOrCreateStoreWebhook(channel: TextChannel): Promise<import("discord.js").Webhook | null> {
+  const cached = storeWebhookCache.get(channel.id);
+  if (cached) return cached;
+
+  try {
+    const webhooks = await channel.fetchWebhooks();
+    let webhook = webhooks.find((w) => w.owner?.id === client.user?.id);
+    if (!webhook) {
+      webhook = await channel.createWebhook({ name: "Dragon Relay" });
+    }
+    storeWebhookCache.set(channel.id, webhook);
+    return webhook;
+  } catch (err) {
+    logger.error({ err, channelId: channel.id }, "Failed to get/create store webhook");
+    return null;
+  }
+}
+
 /** بيجيب كل الأعضاء اللي عندهم صلاحية Administrator في السيرفر */
 async function getAdminMemberIds(guild: Guild): Promise<string[]> {
   try {
@@ -3086,9 +3112,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
       }
     }
 
-    // ── زرار "طلب المنتج" تحت كل رسالة من صاحب المتجر (أو شريكه) ─────────
-    // NOTE: بيتحط تحت أي رسالة (نصية أو صورة) من الأونر/الشريك في الروم
-    //       عشان العميل يقدر يفتح تكت مراجعة (ثريد) بضغطة زرار.
+    // ── تشفير رسائل صاحب المتجر + زرار "طلب المنتج" ──────────────────────
+    // NOTE: أي رسالة من الأونر/الشريك في الروم (بعد ما تعدي كل المودريشن
+    //       فوق) بتتمسح وتتبعت تاني عن طريق webhook بنفس الاسم والصورة،
+    //       بس بمحتوى متشفر (encodeArabicFranco)، وتحتها زرار طلب المنتج.
     if (isRoomOwner || isRoomPartner) {
       const requestProductRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -3097,7 +3124,33 @@ client.on(Events.MessageCreate, async (message: Message) => {
           .setLabel("طلب المنتج")
           .setStyle(ButtonStyle.Success),
       );
-      await message.reply({ components: [requestProductRow] }).catch(() => {});
+
+      const encodedContent = message.content ? encodeArabicFranco(message.content) : "";
+      const attachmentUrls = message.attachments.map((a) => a.url);
+      const webhook = await getOrCreateStoreWebhook(channel);
+
+      if (webhook && (encodedContent || attachmentUrls.length > 0)) {
+        const relayed = await webhook.send({
+          username:  message.member?.displayName ?? message.author.username,
+          avatarURL: message.author.displayAvatarURL(),
+          content:   encodedContent || undefined,
+          files:     attachmentUrls.length ? attachmentUrls : undefined,
+          components: [requestProductRow],
+        }).catch((err) => {
+          logger.error({ err, channelId: channel.id }, "Failed to relay store message via webhook");
+          return null;
+        });
+
+        if (relayed) {
+          await message.delete().catch(() => {});
+        } else {
+          // فشل الـ webhook — سيب الرسالة الأصلية وحط الزرار تحتها بدل ما تضيع
+          await message.reply({ components: [requestProductRow] }).catch(() => {});
+        }
+      } else {
+        // مفيش webhook أو رسالة فاضية (زي رسائل الستيكرز) — رد عادي بالزرار
+        await message.reply({ components: [requestProductRow] }).catch(() => {});
+      }
     }
   }
 
