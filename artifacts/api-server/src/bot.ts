@@ -2126,7 +2126,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
     //       بنقرا الرقم ونرد بتعليق مختلف على حسب قد ما معاه.
     const COMMANDS_ROOM_ID = "1523817510435164291";
     if (channel.id === COMMANDS_ROOM_ID) {
-      const balanceMatch = searchText.match(/account balance is\s*\$?([\d,]+(?:\.\d+)?)/i);
+      const balanceMatch = searchText.match(/account balance is\s*[`$]*([\d,]+(?:\.\d+)?)/i);
       if (balanceMatch) {
         const amount = parseFloat(balanceMatch[1].replace(/,/g, ""));
         let reply: string;
