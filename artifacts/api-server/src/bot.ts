@@ -18,6 +18,7 @@
  */
 
 import { findBadWord } from "./badwords.js";
+import { joinVoiceChannel, VoiceConnectionStatus, entersState } from "@discordjs/voice";
 
 import {
   Client,
@@ -72,6 +73,7 @@ import { fileURLToPath } from "url";
 const TOKEN    = process.env.DISCORD_TOKEN ?? "";
 const OWNER_ID = process.env.OWNER_ID ?? "";
 const GUILD_ID = process.env.GUILD_ID ?? "";
+const AFK_VOICE_CHANNEL_ID = "1492986948409888869";
 
 // تحقق من وجود المتغيرات المطلوبة قبل تشغيل البوت
 if (!TOKEN)    throw new Error("DISCORD_TOKEN is required but not set");
@@ -207,6 +209,7 @@ export const client = new Client({
     GatewayIntentBits.GuildMembers,     // Privileged — لازم تفعّله في Developer Portal
     GatewayIntentBits.DirectMessages,
     GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Channel, Partials.Message], // عشان يشتغل مع DMs
 });
@@ -214,6 +217,43 @@ export const client = new Client({
 client.on("error", (err) => {
   logger.error({ err }, "Discord client error");
 });
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  AFK Voice — يخلي البوت واقف في روم صوتي معين طول ما هو شغال
+// ══════════════════════════════════════════════════════════════════════════════
+function joinAfkVoiceChannel(guild: import("discord.js").Guild) {
+  try {
+    const connection = joinVoiceChannel({
+      channelId: AFK_VOICE_CHANNEL_ID,
+      guildId: guild.id,
+      adapterCreator: guild.voiceAdapterCreator,
+      selfDeaf: true,
+      selfMute: true,
+    });
+
+    connection.on(VoiceConnectionStatus.Disconnected, async () => {
+      try {
+        await Promise.race([
+          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+        ]);
+        // بيحاول يعمل reconnect لوحده
+      } catch {
+        logger.warn("AFK voice connection dropped — rejoining");
+        connection.destroy();
+        joinAfkVoiceChannel(guild);
+      }
+    });
+
+    connection.on("error" as any, (err: unknown) => {
+      logger.error({ err }, "AFK voice connection error");
+    });
+
+    logger.info({ channelId: AFK_VOICE_CHANNEL_ID }, "Joined AFK voice channel");
+  } catch (err) {
+    logger.error({ err }, "Failed to join AFK voice channel");
+  }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  Pending Mention Purchases — تتبع عمليات شراء المنشنات المعلقة (In-Memory)
@@ -1870,6 +1910,7 @@ client.once(Events.ClientReady, async () => {
   const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
   if (guild) {
     await setupAutoMod(guild);
+    joinAfkVoiceChannel(guild);
 
     // ── تهيئة رومات المزاد (قفلها عند بدء التشغيل) ───────────────────────
     for (const roomId of AUCTION_ROOM_CHANNEL_IDS) {
