@@ -2120,6 +2120,29 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
     logger.info({ channelId: channel.id, text: searchText.slice(0, 200) }, "ProBot message");
 
+    // ── رد تلقائي على أمر /credit (c) في روم الأوامر ────────────────────────
+    // NOTE: ProBot بيرد برسالة نصية زي:
+    //       "🏦 | mostafa9321., your account balance is $23398015 ."
+    //       بنقرا الرقم ونرد بتعليق مختلف على حسب قد ما معاه.
+    const COMMANDS_ROOM_ID = "1523817510435164291";
+    if (channel.id === COMMANDS_ROOM_ID) {
+      const balanceMatch = searchText.match(/account balance is\s*\$?([\d,]+(?:\.\d+)?)/i);
+      if (balanceMatch) {
+        const amount = parseFloat(balanceMatch[1].replace(/,/g, ""));
+        let reply: string;
+        if (amount > 10_000_000) {
+          reply = "<a:PepeRain:1499748947105939486> متجيب حته";
+        } else if (amount > 1_000_000) {
+          reply = "<:Call_yami_rm1:1524625461454438481> الو مباحث الاموال العامة";
+        } else {
+          reply = "<:DFC_Angry_jerry:1524625451270803598> يعملوا اي دول النهارده";
+        }
+        await message.reply({ content: reply }).catch(() => {});
+        logger.info({ channelId: channel.id, amount }, "Replied to /credit balance check");
+      }
+      return;
+    }
+
     // ابحث عن رسالة التحويل الناجح من ProBot
     // NOTE: نص ProBot بيكون: "X has transferred `1053` to Y" أو قريب منه.
     //       الـ regex بيقرأ المبلغ ويتحقق من وجود OWNER_ID في النص كمستلم.
