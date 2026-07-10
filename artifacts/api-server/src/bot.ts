@@ -2137,8 +2137,23 @@ client.on(Events.MessageCreate, async (message: Message) => {
         } else {
           reply = "<:DFC_Angry_jerry:1524625451270803598> يعملوا اي دول النهارده";
         }
-        await message.reply({ content: reply }).catch(() => {});
-        logger.info({ channelId: channel.id, amount }, "Replied to /credit balance check");
+        // نرد على رسالة صاحب الأمر (الـ "c") نفسها، مش على رد ProBot.
+        // NOTE: أوامر البريفكس (زي "c") مفيهاش reference لرسالة المستخدم في
+        //       رد ProBot، فبنلاقيها بإننا نجيب آخر رسالة مش من بوت قبل رد
+        //       ProBot ده في نفس الشانل.
+        let targetMessage: Message = message;
+        try {
+          const history = await channel.messages.fetch({ limit: 10, before: message.id });
+          const triggerMsg = [...history.values()]
+            .sort((a, b) => b.createdTimestamp - a.createdTimestamp)
+            .find((m) => !m.author.bot);
+          if (triggerMsg) targetMessage = triggerMsg;
+        } catch (err) {
+          logger.error({ err }, "Failed to look up /credit trigger message");
+        }
+
+        await targetMessage.reply({ content: reply }).catch(() => {});
+        logger.info({ channelId: channel.id, amount, targetMessageId: targetMessage.id }, "Replied to /credit balance check");
       }
       return;
     }
