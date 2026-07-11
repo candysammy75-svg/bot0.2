@@ -2961,6 +2961,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const targetUser    = mentionedUser ?? message.author;
     const targetId      = targetUser.id;
 
+    // ── البوتات مالهاش رصيد منشنات — منعاً لإنشاء يوزر وهمي ليها ─────────
+    if (targetUser.bot) {
+      await message.reply({ content: "❌ البوتات مالهاش رصيد منشنات." }).catch(() => {});
+      return;
+    }
+
     const u            = await getOrCreateUser(targetId, targetUser.username);
     const guildIconURL = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
     const avatarURL    = targetUser.displayAvatarURL({ extension: "png", size: 256 });
