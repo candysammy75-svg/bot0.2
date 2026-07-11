@@ -1414,7 +1414,7 @@ const AUCTION_INFO_CHANNEL_ID = "1523801349655888076";
 const AUCTION_TYPES = {
   everyone: { label: "@everyone", emoji: "📢", price: 10_000_000 },
   here:     { label: "@here",     emoji: "📣", price: 5_000_000  },
-  offers:   { label: "@offers",   emoji: "🔔", price: 3_000_000  },
+  offers:   { label: "@مزاد",     emoji: "🔔", price: 3_000_000  },
 } as const;
 type AuctionType = keyof typeof AUCTION_TYPES;
 
@@ -1604,7 +1604,7 @@ async function startAuction(
 
   const mentionText =
     aType === "everyone" ? "@everyone" :
-    aType === "here"     ? "@here"     : `<@&${OFFERS_ROLE_ID}>`;
+    aType === "here"     ? "@here"     : `<@&${AUCTION_ROLE_ID}>`;
 
   // ── إعلان بيع (mention-only) — بيختلف عن مزاد المزايدة ────────────────
   if (schedule.sellingPrice) {
@@ -3730,7 +3730,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
             name:   "\u200b",
             value:
               `${STAR_EMOJI} **منشن :**\n` +
-              `• ${ZOOM_EMOJI} <@&${OFFERS_ROLE_ID}>\n\n` +
+              `• ${ZOOM_EMOJI} <@&${AUCTION_ROLE_ID}>\n\n` +
               `💰 **السعر :**\n` +
               `• ${PROBOT_EMOJI_AUC} 3,000,000\n` +
               `ـﮩ══════════════ﮩـ`,
@@ -3890,7 +3890,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel("@everyone").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel("@here").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel("@offers").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel("@مزاد").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
       );
 
       await interaction.editReply({ embeds: [embed], components: [row] });
