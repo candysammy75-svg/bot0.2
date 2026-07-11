@@ -1078,7 +1078,8 @@ async function revokeMentionRoleWithCooldown(
       try {
         const u = await getOrCreateUser(userId, "");
         const hasBalance =
-          u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
+          u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0 ||
+          u.ordersBalance   > 0 || u.auctionBalance > 0;
         if (!hasBalance) return; // الرصيد خلص — ما يرجعش الرول
         const freshMember = await guild.members.fetch(userId).catch(() => null);
         if (!freshMember || freshMember.roles.cache.has(mentionActiveRoleId!)) return;
@@ -1390,6 +1391,17 @@ const ORDERS_ROLE_ID = "1525478170491617382";
  *       منشن دائم بيتنزل من رصيد صاحب الروم زي offers/here/everyone بالظبط.
  */
 const AUCTION_ROLE_ID = "1525478115181334548";
+
+/**
+ * ID روم الطلبيات الثابت — أي حد في السيرفر يقدر يبعت فيه (مش زي رومات
+ * العملاء المقفولة على الأونر/الشريك). فيه سلوموود ساعة (بيتحط تلقائياً
+ * عند تشغيل البوت)، والمنشنات المسموحة فيه: @everyone / @here / طلبيات بس —
+ * @offers والمزاد ممنوعين هنا حتى لو صاحبهم معفي من AutoMod.
+ */
+const ORDERS_STATIC_CHANNEL_ID = "1523801357017153658";
+
+/** سلوموود روم الطلبيات: ساعة كاملة */
+const ORDERS_ROOM_SLOWMODE_SEC = 60 * 60;
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  المزاد — الإعدادات والحالة والأدوات
@@ -2244,6 +2256,19 @@ client.once(Events.ClientReady, async () => {
       await lockAuctionRoom(guild, roomId);
     }
 
+    // ── تهيئة روم الطلبيات الثابت (سلوموود ساعة + فتح الإرسال للكل) ──────
+    const ordersRoomCh = guild.channels.cache.get(ORDERS_STATIC_CHANNEL_ID) as TextChannel | undefined;
+    if (ordersRoomCh && ordersRoomCh.type === ChannelType.GuildText) {
+      await ordersRoomCh.setRateLimitPerUser(ORDERS_ROOM_SLOWMODE_SEC, "Dragon Bot — orders room slowmode").catch((err) => {
+        logger.error({ err }, "Failed to set orders room slowmode");
+      });
+      await ordersRoomCh.permissionOverwrites
+        .edit(guild.roles.everyone, { SendMessages: true })
+        .catch((err) => {
+          logger.error({ err }, "Failed to open orders room for sending");
+        });
+    }
+
     // ── استعادة IDs رسائل شانل المزاد بعد الـ restart ────────────────────
     try {
       const infoCh = await guild.channels.fetch(AUCTION_INFO_CHANNEL_ID).catch(() => null) as TextChannel | null;
@@ -3089,6 +3114,75 @@ client.on(Events.MessageCreate, async (message: Message) => {
       await message.react("✅").catch(() => {});
     }
     return; // لا تعالج رسائل رومات المزاد بأي منطق آخر
+  }
+
+  // ── روم الطلبيات الثابت — أي حد يبعت فيه، المسموح بس @everyone/@here/طلبيات ──
+  // NOTE: مش زي رومات العملاء (isRoomChannel) — ده روم عام مفتوح للكل، مش
+  //       مرتبط بشراء معين. سلوموود الساعة متحطوطة تلقائياً في ClientReady.
+  if (channel.id === ORDERS_STATIC_CHANNEL_ID) {
+    const usedEveryoneO = /@everyone/i.test(content);
+    const usedHereO     = /@here/i.test(content);
+    const usedOrdersO   = new RegExp(`<@&${ORDERS_ROLE_ID}>`).test(content);
+    const usedOffersO   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
+    const usedAuctionO  = new RegExp(`<@&${AUCTION_ROLE_ID}>`).test(content);
+
+    // ── @offers والمزاد ممنوعين في روم الطلبيات — يتحذفوا حتى لو صاحبهم معفي من AutoMod ──
+    if (usedOffersO || usedAuctionO) {
+      await message.delete().catch(() => {});
+      try {
+        await message.author.send(
+          "❌ روم الطلبيات مسموح فيه منشن @everyone / @here / طلبيات بس — منشن @offers أو مزاد ممنوع هنا."
+        );
+      } catch {}
+      return;
+    }
+
+    if (usedEveryoneO || usedHereO || usedOrdersO) {
+      const isAdminO = (message.member ?? await message.guild.members.fetch(userId).catch(() => null))
+        ?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
+
+      if (!isAdminO) {
+        const u = await getOrCreateUser(userId, username);
+
+        const updates: Partial<{ everyoneBalance: number; hereBalance: number; ordersBalance: number }> = {};
+        if (usedEveryoneO) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
+        if (usedHereO)     updates.hereBalance     = Math.max(0, u.hereBalance     - 1);
+        if (usedOrdersO)   updates.ordersBalance   = Math.max(0, u.ordersBalance   - 1);
+
+        await db
+          .update(botUsersTable)
+          .set(updates)
+          .where(eq(botUsersTable.discordUserId, userId));
+
+        const newEveryoneO = updates.everyoneBalance ?? u.everyoneBalance;
+        const newHereO     = updates.hereBalance     ?? u.hereBalance;
+        const newOrdersO   = updates.ordersBalance   ?? u.ordersBalance;
+        const hasBalanceO  = newEveryoneO > 0 || newHereO > 0 || newOrdersO > 0 ||
+                             u.offersBalance > 0 || u.auctionBalance > 0;
+
+        if (!hasBalanceO) {
+          await revokeMentionRole(message.guild, userId);
+          try {
+            await message.author.send(
+              `⛔ رصيد المنشنات خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+              `📊 الرصيد الحالي:\n` +
+              `  📢 @everyone: ${newEveryoneO}\n` +
+              `  📣 @here: ${newHereO}\n` +
+              `  📦 طلبيات: ${newOrdersO}`
+            );
+          } catch {}
+        } else {
+          await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
+          const linesO: string[] = [];
+          if (usedEveryoneO) linesO.push(`📢 @everyone: تبقى ${newEveryoneO} منشن`);
+          if (usedHereO)     linesO.push(`📣 @here: تبقى ${newHereO} منشن`);
+          if (usedOrdersO)   linesO.push(`📦 طلبيات: تبقى ${newOrdersO} منشن`);
+          linesO.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
+          try { await message.author.send(linesO.join("\n")); } catch {}
+        }
+      }
+    }
+    return;
   }
 
   // ── فحص رومات العملاء (completed purchases) ──────────────────────────────
