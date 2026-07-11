@@ -1846,13 +1846,6 @@ async function sendShopPanel(channel: TextChannel) {
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...categoryButtons.slice(i, i + 5)));
   }
 
-  // زرار "🛒 شراء" — فتح قائمة شراء منفصلة تماماً عن أزرار الأسعار فوق (openbuymenu)
-  rows.push(
-    new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("openbuymenu").setLabel("🛒 شراء").setStyle(ButtonStyle.Success)
-    )
-  );
-
   const files: AttachmentBuilder[] = [];
   const guildIconURL = channel.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
@@ -1863,6 +1856,50 @@ async function sendShopPanel(channel: TextChannel) {
     .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
   // أضف بانر لو موجود (dragon_banner.webp)
+  if (fs.existsSync(DRAGON_BANNER_PATH)) {
+    files.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+    embed.setImage("attachment://dragon_banner.webp");
+  }
+
+  await channel.send({ embeds: [embed], files, components: rows });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  sendBuyPanel — بانل الشراء المباشر (/buy)
+//  NOTE: نفس فئات SHOP_CATEGORIES وشكل البانل بتاع sendShopPanel بالظبط،
+//        لكن الأزرار هنا customId = buycat_<category> بدل shopcat_<category>
+//        عشان تودّي على طول لخطوة الدفع من غير عرض سعر قبلها.
+// ══════════════════════════════════════════════════════════════════════════════
+async function sendBuyPanel(channel: TextChannel) {
+  const description =
+    `اضغط على أي فئة تحت عشان تشتري على طول من غير عرض سعر ${MONEY_EMOJI}\n\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `للشراء المباشر :\n\n` +
+    SHOP_CATEGORIES.map((cat) => `${MONEY_EMOJI} **شراء ${cat}**`).join("\n") +
+    `\n\n━━━━━━━━━━━━━━━━━━━━`;
+
+  const categoryButtons = SHOP_CATEGORIES.map((cat) =>
+    new ButtonBuilder()
+      .setCustomId(`buycat_${cat}`)
+      .setLabel(`شراء ${cat}`)
+      .setStyle(ButtonStyle.Success)
+      .setEmoji("🛒")
+  );
+
+  const rows: ActionRowBuilder<ButtonBuilder>[] = [];
+  for (let i = 0; i < categoryButtons.length; i += 5) {
+    rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...categoryButtons.slice(i, i + 5)));
+  }
+
+  const files: AttachmentBuilder[] = [];
+  const guildIconURL = channel.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+  const embed = new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+    .setDescription(description)
+    .setColor(0x2ecc71)
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
   if (fs.existsSync(DRAGON_BANNER_PATH)) {
     files.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
     embed.setImage("attachment://dragon_banner.webp");
@@ -1960,7 +1997,11 @@ client.once(Events.ClientReady, async () => {
     // ── أوامر عامة ──────────────────────────────────────────────────────────
     new SlashCommandBuilder()
       .setName("shop")
-      .setDescription("افتح بانل شراء الرومات"),
+      .setDescription("افتح بانل أسعار المتجر (عرض بس، من غير شراء)"),
+
+    new SlashCommandBuilder()
+      .setName("buy")
+      .setDescription("افتح بانل الشراء المباشر"),
 
     new SlashCommandBuilder()
       .setName("myroom")
@@ -3699,65 +3740,70 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   }
 
   // ══════════════════════════════════════════════════════════════════════════
-  //  قائمة "🛒 شراء" — منفصلة تماماً عن قائمة الأسعار (shopcat_/roominfo_/addoninfo_).
-  //  مفيش سعر بيظهر هنا؛ الضغط على أي حاجة يودّي على طول لخطوة الدفع/أمر التحويل.
+  //  بانل الشراء المباشر (/buy) — نفس فئات وأزرار بانل الأسعار (shopcat_) بالظبط،
+  //  لكن هنا مفيش عرض سعر؛ الضغط على أي فئة/إضافة يودّي على طول لخطوة الدفع.
   // ══════════════════════════════════════════════════════════════════════════
 
-  // ── زرار فتح قائمة الشراء (openbuymenu) ─────────────────────────────────
-  if (interaction.isButton() && interaction.customId === "openbuymenu") {
+  // ── زرار فئة الشراء (buycat_*) ───────────────────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("buycat_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const category = interaction.customId.replace("buycat_", "");
 
-    const embed = new EmbedBuilder()
-      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-      .setTitle("🛒 قائمة الشراء")
-      .setDescription("اختار إيه اللي عايز تشتريه من تحت 👇")
-      .setColor(0x2ecc71)
-      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+    // ── فئة الإضافات ────────────────────────────────────────────────────────
+    if (category === "الإضافات") {
+      const embed = new EmbedBuilder()
+        .setTitle("➕ شراء إضافات")
+        .setDescription("اضغط على الإضافة اللي عايز تشتريها")
+        .setColor(0x2ecc71)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
-    if (guildIconURL) embed.setThumbnail(guildIconURL);
+      // NOTE: منشنات (everyone/here/offers) بتستخدم نفس customId بتاع مودال الكمية
+      //       (buy_mention_*) عشان تفتح المودال على طول من غير مرحلة سعر.
+      //       باقي الإضافات بتستخدم quickbuy_addon_<key> اللي بيتحقق من صحة
+      //       الطلب (مثلاً هل عندك متجر) وبعدين يودّيك على طول لزرار الدفع.
+      const buttons = [
+        new ButtonBuilder().setCustomId("buy_mention_everyone").setLabel("📢 منشن @everyone").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_mention_here").setLabel("📣 منشن @here").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("🔔 منشن @offers").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("🔒 تفعيل المتجر").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("⚠️ إزالة تحذير").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("✏️ تغيير اسم المتجر").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("🤝 إضافة شريك").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("🗑️ إزالة شريك").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("✍️ خطوط تلقائيه").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("📢 نشر تلقائي").setStyle(ButtonStyle.Primary),
+      ];
 
-    const files: AttachmentBuilder[] = [];
-    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-      files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
-      embed.setImage("attachment://dragon_text_banner.webp");
+      const components: ActionRowBuilder<ButtonBuilder>[] = [];
+      for (let i = 0; i < buttons.length; i += 5) {
+        components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons.slice(i, i + 5)));
+      }
+
+      await interaction.editReply({ embeds: [embed], components });
+      return;
     }
 
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("buymenu_rooms").setLabel("🏠 شراء رومات").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("buymenu_addons").setLabel("➕ شراء إضافات").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("buymenu_auction").setLabel("🏷️ شراء مزاد").setStyle(ButtonStyle.Success),
-    );
+    // ── فئة المزاد ──────────────────────────────────────────────────────────
+    if (category === "المزاد") {
+      const embed = new EmbedBuilder()
+        .setTitle("🏷️ شراء منشن إعلان مزاد")
+        .setDescription("اختار نوع المنشن اللي عايز تشتريه")
+        .setColor(0x2ecc71)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
-    await interaction.editReply({ embeds: [embed], files, components: [row] });
-    return;
-  }
+      // NOTE: نفس customId بتاع buy_auc_mention_* الأصلي — بيودّيك على طول لأمر التحويل.
+      const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone`).setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel(`${AUCTION_TYPES.here.emoji} @here`).setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel(`${AUCTION_TYPES.offers.emoji} @offers`).setStyle(ButtonStyle.Primary),
+      );
 
-  // ── زرار "شراء رومات" (buymenu_rooms) — قائمة الفئات من غير أسعار ────────
-  if (interaction.isButton() && interaction.customId === "buymenu_rooms") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const roomCategories = SHOP_CATEGORIES.filter((c) => c !== "الإضافات" && c !== "المزاد");
+      await interaction.editReply({ embeds: [embed], components: [row] });
+      return;
+    }
 
-    const embed = new EmbedBuilder()
-      .setTitle("🏠 شراء رومات — اختار الفئة")
-      .setColor(0x2ecc71)
-      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
-
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      ...roomCategories.map((cat) =>
-        new ButtonBuilder().setCustomId(`buyroomcat_${cat}`).setLabel(cat).setStyle(ButtonStyle.Secondary)
-      )
-    );
-
-    await interaction.editReply({ embeds: [embed], components: [row] });
-    return;
-  }
-
-  // ── زرار فئة رومات للشراء المباشر (buyroomcat_*) ─────────────────────────
-  if (interaction.isButton() && interaction.customId.startsWith("buyroomcat_")) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const category = interaction.customId.replace("buyroomcat_", "");
-    const rooms    = await db.select().from(roomsTable).where(eq(roomsTable.category, category));
+    // ── فئات الرومات العادية ────────────────────────────────────────────────
+    const rooms = await db.select().from(roomsTable).where(eq(roomsTable.category, category));
 
     if (rooms.length === 0) {
       await interaction.editReply({ content: `📭 مفيش رومات في فئة **${category}** دلوقتي.` });
@@ -3785,63 +3831,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     await interaction.editReply({ embeds: [embed], components });
-    return;
-  }
-
-  // ── زرار "شراء إضافات" (buymenu_addons) — قائمة الإضافات من غير أسعار ────
-  if (interaction.isButton() && interaction.customId === "buymenu_addons") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    const embed = new EmbedBuilder()
-      .setTitle("➕ شراء إضافات")
-      .setDescription("اضغط على الإضافة اللي عايز تشتريها")
-      .setColor(0x2ecc71)
-      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
-
-    // NOTE: منشنات (everyone/here/offers) بتستخدم نفس customId بتاع مودال الكمية
-    //       (buy_mention_*) عشان تفتح المودال على طول من غير مرحلة سعر.
-    //       باقي الإضافات بتستخدم quickbuy_addon_<key> اللي بيتحقق من صحة
-    //       الطلب (مثلاً هل عندك متجر) وبعدين يودّيك على طول لزرار الدفع.
-    const buttons = [
-      new ButtonBuilder().setCustomId("buy_mention_everyone").setLabel("📢 منشن @everyone").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("buy_mention_here").setLabel("📣 منشن @here").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("🔔 منشن @offers").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("🔒 تفعيل المتجر").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("⚠️ إزالة تحذير").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("✏️ تغيير اسم المتجر").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("🤝 إضافة شريك").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("🗑️ إزالة شريك").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("✍️ خطوط تلقائيه").setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("📢 نشر تلقائي").setStyle(ButtonStyle.Primary),
-    ];
-
-    const components: ActionRowBuilder<ButtonBuilder>[] = [];
-    for (let i = 0; i < buttons.length; i += 5) {
-      components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons.slice(i, i + 5)));
-    }
-
-    await interaction.editReply({ embeds: [embed], components });
-    return;
-  }
-
-  // ── زرار "شراء مزاد" (buymenu_auction) — أنواع المنشن من غير أسعار ───────
-  if (interaction.isButton() && interaction.customId === "buymenu_auction") {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
-    const embed = new EmbedBuilder()
-      .setTitle("🏷️ شراء منشن إعلان مزاد")
-      .setDescription("اختار نوع المنشن اللي عايز تشتريه")
-      .setColor(0x2ecc71)
-      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
-
-    // NOTE: نفس customId بتاع buy_auc_mention_* الأصلي — بيودّيك على طول لأمر التحويل.
-    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-      new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone`).setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel(`${AUCTION_TYPES.here.emoji} @here`).setStyle(ButtonStyle.Primary),
-      new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel(`${AUCTION_TYPES.offers.emoji} @offers`).setStyle(ButtonStyle.Primary),
-    );
-
-    await interaction.editReply({ embeds: [embed], components: [row] });
     return;
   }
 
@@ -6247,7 +6236,14 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
   if (interaction.commandName === "shop") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     await sendShopPanel(interaction.channel as TextChannel);
-    await interaction.editReply({ content: "✅ تم فتح بانل المتجر!" });
+    await interaction.editReply({ content: "✅ تم فتح بانل الأسعار!" });
+  }
+
+  // ── /buy ──────────────────────────────────────────────────────────────────
+  if (interaction.commandName === "buy") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    await sendBuyPanel(interaction.channel as TextChannel);
+    await interaction.editReply({ content: "✅ تم فتح بانل الشراء!" });
   }
 
   // ── /myroom ───────────────────────────────────────────────────────────────
