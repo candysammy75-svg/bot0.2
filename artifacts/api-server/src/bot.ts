@@ -195,7 +195,12 @@ const ADDONS = [
   { key: "mention_requests",          label: "سعر منشن طلبات" },          // يسار
   { key: "mention_here_requests",     label: "سعر منشن هير طلبات" },
   { key: "mention_everyone_requests", label: "سعر منشن إيفري طلبات" },    // يمين
-  // ── Row 4 (شاشة L→R: منشن إيفري مزاد | منشن هير مزاد | منشن مزادات) ───
+  // ── Row 4 (شاشة L→R: منشن طلبيات | منشن مزاد) ─────────────────────────
+  // NOTE: دول رصيد دائم زي منشن @offers بالظبط (مش زي مودال منشن طلبات
+  //       اللي فوق، اللي بيفتح تذكرة يدوية) — يستخدموا مودال الكمية زي
+  //       mention_shop/mention_here/mention_everyone.
+  { key: "mention_orders",            label: "سعر منشن طلبيات" },
+  { key: "mention_auction",           label: "سعر منشن مزاد" },
   // ── Row 5 (شاشة L→R: نشر تلقائي | خطوط تلقائيه | إزالة تحذير) ─────────
   { key: "remove_store_warning",      label: "سعر إزالة تحذير" },         // يسار
   { key: "auto_lines",                label: "سعر خطوط تلقائيه" },
@@ -278,7 +283,7 @@ function joinAfkVoiceChannel(guild: import("discord.js").Guild) {
 //  NOTE: الـ Map بتتمسح لو البوت restart — لكن ده معقول لأن الـ window دقيقتين بس.
 // ══════════════════════════════════════════════════════════════════════════════
 
-type MentionKey = "here" | "everyone" | "shop";
+type MentionKey = "here" | "everyone" | "shop" | "orders" | "auction";
 
 interface PendingMentionPurchase {
   userId:      string;
@@ -487,7 +492,7 @@ interface ActiveAutoPublish {
   roomChannelId:   string;
   message:         string;
   imageUrl?:       string;
-  mentionType?:    "here" | "everyone" | "offers";
+  mentionType?:    "here" | "everyone" | "offers" | "orders" | "auction";
   mentionsPerPost: number;
   intervalId:      ReturnType<typeof setInterval>;
   endTimeoutId:    ReturnType<typeof setTimeout>;
@@ -596,7 +601,7 @@ async function startAutoPublish(
     roomChannelId:   string;
     message:         string;
     imageUrl?:       string;
-    mentionType?:    "here" | "everyone" | "offers";
+    mentionType?:    "here" | "everyone" | "offers" | "orders" | "auction";
     mentionsPerPost: number;
     durationMs:      number;
   },
@@ -655,14 +660,18 @@ async function startAutoPublish(
         const user   = await getOrCreateUser(params.userId, params.username);
         const balKey =
           params.mentionType === "here"     ? "hereBalance" :
-          params.mentionType === "everyone" ? "everyoneBalance" : "offersBalance";
+          params.mentionType === "everyone" ? "everyoneBalance" :
+          params.mentionType === "orders"   ? "ordersBalance" :
+          params.mentionType === "auction"  ? "auctionBalance" : "offersBalance";
         if (user[balKey] >= params.mentionsPerPost) {
           await db.update(botUsersTable)
             .set({ [balKey]: user[balKey] - params.mentionsPerPost })
             .where(eq(botUsersTable.discordUserId, params.userId));
           mentionText =
             params.mentionType === "here"     ? "@here" :
-            params.mentionType === "everyone" ? "@everyone" : `<@&${OFFERS_ROLE_ID}>`;
+            params.mentionType === "everyone" ? "@everyone" :
+            params.mentionType === "orders"   ? `<@&${ORDERS_ROLE_ID}>` :
+            params.mentionType === "auction"  ? `<@&${AUCTION_ROLE_ID}>` : `<@&${OFFERS_ROLE_ID}>`;
         }
       }
 
@@ -987,7 +996,10 @@ async function setupAutoMod(guild: Guild): Promise<void> {
     //       أي محاولة منشن تانية بتطلع "Failed to send" مباشرةً.
     const mentionBlockRuleName = "Bot - Mention Block";
     const existingMentionBlock = existingRules.find((r) => r.name === mentionBlockRuleName);
-    const mentionKeywords = ["@everyone", "@here", `<@&${OFFERS_ROLE_ID}>`];
+    const mentionKeywords = [
+      "@everyone", "@here",
+      `<@&${OFFERS_ROLE_ID}>`, `<@&${ORDERS_ROLE_ID}>`, `<@&${AUCTION_ROLE_ID}>`,
+    ];
 
     if (existingMentionBlock) {
       await existingMentionBlock.edit({
@@ -1365,7 +1377,19 @@ const TICKETS_CATEGORY_ID = "1493289978225098752";
  * ID رول @offers — بيتمنشن في رومات العملاء وبينزل من رصيدهم.
  * NOTE: لو الرول اتحذف أو تغير ID-ه، عدّل هنا.
  */
-const OFFERS_ROLE_ID = "1519711578964889760";
+const OFFERS_ROLE_ID = "1525477889464602734";
+
+/**
+ * ID رول منشن الطلبيات — نفس منطق OFFERS_ROLE_ID بالظبط لكن لفئة "الطلبيات".
+ */
+const ORDERS_ROLE_ID = "1525478170491617382";
+
+/**
+ * ID رول منشن المزاد — نفس منطق OFFERS_ROLE_ID بالظبط لكن لفئة "المزاد".
+ * NOTE: ده مختلف عن AUCTION_TYPES (نظام إعلانات المزاد المنفصل) — ده رصيد
+ *       منشن دائم بيتنزل من رصيد صاحب الروم زي offers/here/everyone بالظبط.
+ */
+const AUCTION_ROLE_ID = "1525478115181334548";
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  المزاد — الإعدادات والحالة والأدوات
@@ -2117,6 +2141,8 @@ client.once(Events.ClientReady, async () => {
             { name: "@offers",   value: "offers" },
             { name: "@here",     value: "here" },
             { name: "@everyone", value: "everyone" },
+            { name: "طلبيات",    value: "orders" },
+            { name: "مزاد",      value: "auction" },
           )
       )
       .addIntegerOption((o) =>
@@ -2375,7 +2401,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
             const buyer      = await getOrCreateUser(matchedMention.userId, matchedMention.username);
             const balKey     =
               matchedMention.mentionKey === "here"     ? "hereBalance" :
-              matchedMention.mentionKey === "everyone" ? "everyoneBalance" : "offersBalance";
+              matchedMention.mentionKey === "everyone" ? "everyoneBalance" :
+              matchedMention.mentionKey === "orders"   ? "ordersBalance" :
+              matchedMention.mentionKey === "auction"  ? "auctionBalance" : "offersBalance";
             const newBalance = buyer[balKey] + matchedMention.qty;
 
             await db.update(botUsersTable)
@@ -2950,8 +2978,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const everyoneDisplay = targetIsAdmin ? "∞" : String(u.everyoneBalance);
     const hereDisplay     = targetIsAdmin ? "∞" : String(u.hereBalance);
     const offersDisplay   = targetIsAdmin ? "∞" : String(u.offersBalance);
+    const ordersDisplay   = targetIsAdmin ? "∞" : String(u.ordersBalance);
+    const auctionDisplay  = targetIsAdmin ? "∞" : String(u.auctionBalance);
 
-    const hasAny     = targetIsAdmin || u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0;
+    const hasAny     = targetIsAdmin || u.everyoneBalance > 0 || u.hereBalance > 0 || u.offersBalance > 0 || u.ordersBalance > 0 || u.auctionBalance > 0;
     const embedColor = targetIsAdmin ? 0x9b59b6 : hasAny ? 0xffd700 : 0x2b2d31;
     // بنفسجي للأدمن، ذهبي لو في رصيد، رمادي لو فاضي
 
@@ -2978,6 +3008,16 @@ client.on(Events.MessageCreate, async (message: Message) => {
         {
           name:   `${STAR_EMOJI} @offers`,
           value:  `> <@&${OFFERS_ROLE_ID}>\n> ${MONEY_EMOJI} الرصيد : **${offersDisplay}** منشن\n> ${DIV}`,
+          inline: false,
+        },
+        {
+          name:   `${STAR_EMOJI} طلبيات`,
+          value:  `> <@&${ORDERS_ROLE_ID}>\n> ${MONEY_EMOJI} الرصيد : **${ordersDisplay}** منشن\n> ${DIV}`,
+          inline: false,
+        },
+        {
+          name:   `${STAR_EMOJI} مزاد`,
+          value:  `> <@&${AUCTION_ROLE_ID}>\n> ${MONEY_EMOJI} الرصيد : **${auctionDisplay}** منشن\n> ${DIV}`,
           inline: false,
         },
       )
@@ -3236,8 +3276,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const usedEveryone = /@everyone/i.test(content);
     const usedHere     = /@here/i.test(content);
     const usedOffers   = new RegExp(`<@&${OFFERS_ROLE_ID}>`).test(content);
+    const usedOrders   = new RegExp(`<@&${ORDERS_ROLE_ID}>`).test(content);
+    const usedAuction  = new RegExp(`<@&${AUCTION_ROLE_ID}>`).test(content);
 
-    if (usedEveryone || usedHere || usedOffers) {
+    if (usedEveryone || usedHere || usedOffers || usedOrders || usedAuction) {
       // ── الأدمنستراتور: رصيد لا نهائي — لا خصم ولا كولداون ──────────────
       const isAdmin = (message.member ?? await message.guild.members.fetch(userId).catch(() => null))
         ?.permissions.has(PermissionFlagsBits.Administrator) ?? false;
@@ -3256,10 +3298,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
           everyoneBalance: number;
           hereBalance:     number;
           offersBalance:   number;
+          ordersBalance:   number;
+          auctionBalance:  number;
         }> = {};
         if (usedEveryone) updates.everyoneBalance = Math.max(0, u.everyoneBalance - 1);
         if (usedHere)     updates.hereBalance     = Math.max(0, u.hereBalance     - 1);
         if (usedOffers)   updates.offersBalance   = Math.max(0, u.offersBalance   - 1);
+        if (usedOrders)   updates.ordersBalance   = Math.max(0, u.ordersBalance   - 1);
+        if (usedAuction)  updates.auctionBalance  = Math.max(0, u.auctionBalance  - 1);
 
         await db
           .update(botUsersTable)
@@ -3269,7 +3315,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
         const newEveryone = updates.everyoneBalance ?? u.everyoneBalance;
         const newHere     = updates.hereBalance     ?? u.hereBalance;
         const newOffers   = updates.offersBalance   ?? u.offersBalance;
-        const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0;
+        const newOrders   = updates.ordersBalance   ?? u.ordersBalance;
+        const newAuction  = updates.auctionBalance  ?? u.auctionBalance;
+        const hasBalance  = newEveryone > 0 || newHere > 0 || newOffers > 0 || newOrders > 0 || newAuction > 0;
 
         // الشريك الحالي (لتطبيق الكولداون عليه أيضاً)
         const partnerId = roomPurchase?.partnerDiscordUserId ?? null;
@@ -3283,7 +3331,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
               `📊 الرصيد الحالي:\n` +
               `  📢 @everyone: ${newEveryone}\n` +
               `  📣 @here: ${newHere}\n` +
-              `  🔔 @offers: ${newOffers}`
+              `  🔔 @offers: ${newOffers}\n` +
+              `  📦 طلبيات: ${newOrders}\n` +
+              `  🏷️ مزاد: ${newAuction}`
             );
           } catch {}
         } else {
@@ -3296,6 +3346,8 @@ client.on(Events.MessageCreate, async (message: Message) => {
           if (usedEveryone) lines.push(`📢 @everyone: تبقى ${newEveryone} منشن`);
           if (usedHere)     lines.push(`📣 @here: تبقى ${newHere} منشن`);
           if (usedOffers)   lines.push(`🔔 @offers: تبقى ${newOffers} منشن`);
+          if (usedOrders)   lines.push(`📦 طلبيات: تبقى ${newOrders} منشن`);
+          if (usedAuction)  lines.push(`🏷️ مزاد: تبقى ${newAuction} منشن`);
           lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
           try { await message.author.send(lines.join("\n")); } catch {}
         }
@@ -4096,6 +4148,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       mention_here:     { price: 5_000_000,  label: "@here",                    buyId: "buy_mention_here"     },
       mention_everyone: { price: 15_000_000, label: "@everyone",                buyId: "buy_mention_everyone" },
       mention_shop:     { price: 8_000_000,  label: `<@&${OFFERS_ROLE_ID}>`,    buyId: "buy_mention_shop"     },
+      mention_orders:   { price: 5_000_000,  label: `<@&${ORDERS_ROLE_ID}>`,    buyId: "buy_mention_orders"   },
+      mention_auction:  { price: 3_000_000,  label: `<@&${AUCTION_ROLE_ID}>`,   buyId: "buy_mention_auction"  },
     };
 
     if (key in MENTION_BUY_KEYS) {
@@ -4431,6 +4485,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     buy_mention_here:     { price: 5_000_000,  label: "@here",    modalId: "modal_mention_here"     },
     buy_mention_everyone: { price: 15_000_000, label: "@everyone", modalId: "modal_mention_everyone" },
     buy_mention_shop:     { price: 8_000_000,  label: "@offers",  modalId: "modal_mention_shop"     },
+    buy_mention_orders:   { price: 5_000_000,  label: "طلبيات",   modalId: "modal_mention_orders"   },
+    buy_mention_auction:  { price: 3_000_000,  label: "مزاد",     modalId: "modal_mention_auction"  },
   };
 
   if (interaction.isButton() && interaction.customId in MENTION_BUY_CONFIG) {
@@ -4458,6 +4514,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     modal_mention_here:     { price: 5_000_000,  label: "@here"    },
     modal_mention_everyone: { price: 15_000_000, label: "@everyone" },
     modal_mention_shop:     { price: 8_000_000,  label: "@offers"  },
+    modal_mention_orders:   { price: 5_000_000,  label: "طلبيات"   },
+    modal_mention_auction:  { price: 3_000_000,  label: "مزاد"     },
   };
 
   if (interaction.isModalSubmit() && interaction.customId in MENTION_MODAL_CONFIG) {
@@ -6504,10 +6562,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
     const targetUser  = interaction.options.getUser("user", true);
-    const mentionType = interaction.options.getString("type", true) as "offers" | "here" | "everyone";
+    const mentionType = interaction.options.getString("type", true) as "offers" | "here" | "everyone" | "orders" | "auction";
     const amount      = interaction.options.getInteger("amount", true);
     const user        = await getOrCreateUser(targetUser.id, targetUser.username);
-    const balKey      = `${mentionType}Balance` as "offersBalance" | "hereBalance" | "everyoneBalance";
+    const balKey      = `${mentionType}Balance` as "offersBalance" | "hereBalance" | "everyoneBalance" | "ordersBalance" | "auctionBalance";
     const newBalance  = user[balKey] + amount;
 
     await db
@@ -6516,8 +6574,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .where(eq(botUsersTable.discordUserId, targetUser.id));
 
     const mentionName =
-      mentionType === "offers"   ? `<@&${OFFERS_ROLE_ID}>` :
-      mentionType === "here"     ? "@here"                 : "@everyone";
+      mentionType === "offers"  ? `<@&${OFFERS_ROLE_ID}>` :
+      mentionType === "orders"  ? `<@&${ORDERS_ROLE_ID}>` :
+      mentionType === "auction" ? `<@&${AUCTION_ROLE_ID}>` :
+      mentionType === "here"    ? "@here"                 : "@everyone";
 
     // لو الرصيد أصبح موجود → دي رول "منشن مفعّل" عشان يقدر يمنشن
     if (newBalance > 0 && interaction.guild) {
@@ -7089,7 +7149,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     const mentionTypeInput = new TextInputBuilder()
       .setCustomId("mention_type")
-      .setLabel("نوع المنشن (here / everyone / offers)")
+      .setLabel("نوع المنشن (here/everyone/offers/orders/auction)")
       .setStyle(TextInputStyle.Short)
       .setPlaceholder("here")
       .setRequired(true)
@@ -7206,10 +7266,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const imageUrl        = interaction.fields.getTextInputValue("image_url").trim() || undefined;
 
     // تحقق من نوع المنشن
-    const validTypes = ["here", "everyone", "offers"] as const;
+    const validTypes = ["here", "everyone", "offers", "orders", "auction"] as const;
     const mentionType = validTypes.find((t) => t === rawMentionType);
     if (!mentionType) {
-      await interaction.editReply({ content: `❌ نوع المنشن غلط — لازم يكون: here / everyone / offers` });
+      await interaction.editReply({ content: `❌ نوع المنشن غلط — لازم يكون: here / everyone / offers / orders / auction` });
       return;
     }
 
@@ -7223,7 +7283,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const user   = await getOrCreateUser(userId, interaction.user.username);
     const balKey =
       mentionType === "here"     ? "hereBalance" :
-      mentionType === "everyone" ? "everyoneBalance" : "offersBalance";
+      mentionType === "everyone" ? "everyoneBalance" :
+      mentionType === "orders"   ? "ordersBalance" :
+      mentionType === "auction"  ? "auctionBalance" : "offersBalance";
     if (user[balKey] < mentionsPerPost) {
       await interaction.editReply({
         content: `❌ رصيدك من @${mentionType} (${user[balKey]}) أقل من المطلوب كل نشرة (${mentionsPerPost}).`,
