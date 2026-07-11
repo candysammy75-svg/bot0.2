@@ -1226,7 +1226,14 @@ function roomLabel(name: string): string {
 //        الصور المطلوبة:
 //          dragon.webp           — صورة التنين (thumbnail في صفحة معلومات الروم)
 //          dragon_banner.webp    — بانر المتجر الرئيسي + رسالة تأكيد إنشاء الروم
-//          dragon_text_banner.webp — بانر أسعار الفئات
+//          dragon_text_banner.webp — بانر الخط العام (يستخدم في كل الإمبيدات
+//                                    العامة اللي مالهاش بانر خاص بفئتها)
+//          dragon_text_banner_stores_types.webp  — بانر "أنواع المتاجر" (buycat_المتاجر)
+//          dragon_text_banner_stores_rules.webp  — بانر "قوانين المتاجر" (رسالة ترحيب الروم)
+//          dragon_text_banner_stores_prices.webp — بانر "أسعار المتاجر" (shopcat_المتاجر)
+//          dragon_text_banner_orders.webp        — بانر "أسعار الطلبيات" (shopcat_الطلبيات)
+//          dragon_text_banner_auction.webp       — بانر "أسعار المزاد" (shopcat_المزاد)
+//          dragon_text_banner_addons.webp        — بانر "أسعار الإضافات" (shopcat_الإضافات)
 // ══════════════════════════════════════════════════════════════════════════════
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.resolve(__dirname, "../assets");
@@ -1234,6 +1241,25 @@ const ASSETS_DIR = path.resolve(__dirname, "../assets");
 const DRAGON_IMAGE_PATH       = path.join(ASSETS_DIR, "dragon.webp");
 const DRAGON_BANNER_PATH      = path.join(ASSETS_DIR, "dragon_banner.webp");
 const DRAGON_TEXT_BANNER_PATH = path.join(ASSETS_DIR, "dragon_text_banner.webp");
+
+const STORES_TYPES_BANNER_PATH  = path.join(ASSETS_DIR, "dragon_text_banner_stores_types.webp");
+const STORES_RULES_BANNER_PATH  = path.join(ASSETS_DIR, "dragon_text_banner_stores_rules.webp");
+const STORES_PRICES_BANNER_PATH = path.join(ASSETS_DIR, "dragon_text_banner_stores_prices.webp");
+const ORDERS_BANNER_PATH        = path.join(ASSETS_DIR, "dragon_text_banner_orders.webp");
+const AUCTION_BANNER_PATH       = path.join(ASSETS_DIR, "dragon_text_banner_auction.webp");
+const ADDONS_BANNER_PATH        = path.join(ASSETS_DIR, "dragon_text_banner_addons.webp");
+
+// بانر بانل الأسعار الخاص بكل فئة (shopcat_*) — لو الفئة معملها بانر مخصص
+// بنستخدمه، وإلا بيرجع للبانر العام (DRAGON_TEXT_BANNER_PATH).
+const SHOPCAT_BANNER_PATH: Record<string, string> = {
+  "المتاجر":   STORES_PRICES_BANNER_PATH,
+  "الطلبيات":  ORDERS_BANNER_PATH,
+};
+
+// بانر بانل الشراء الخاص بكل فئة (buycat_*)
+const BUYCAT_BANNER_PATH: Record<string, string> = {
+  "المتاجر": STORES_TYPES_BANNER_PATH,
+};
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  فئات المتجر
@@ -3505,10 +3531,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
         welcomeEmbed.setImage("attachment://dragon_banner.webp");
       }
 
-      // أرسل الخط (text banner) كصورة مستقلة أعلى الإمبيد
-      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      // أرسل الخط (text banner) كصورة مستقلة أعلى الإمبيد — بانر "قوانين المتاجر"
+      if (fs.existsSync(STORES_RULES_BANNER_PATH)) {
         await newChannel.send({
-          files: [new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" })],
+          files: [new AttachmentBuilder(STORES_RULES_BANNER_PATH, { name: "dragon_text_banner.webp" })],
         }).catch(() => {});
       }
 
@@ -3576,8 +3602,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       if (guildIconURL) embed.setThumbnail(guildIconURL);
 
       const files: AttachmentBuilder[] = [];
-      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-        files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      if (fs.existsSync(ADDONS_BANNER_PATH)) {
+        files.push(new AttachmentBuilder(ADDONS_BANNER_PATH, { name: "dragon_text_banner.webp" }));
         embed.setImage("attachment://dragon_text_banner.webp");
       }
 
@@ -3664,8 +3690,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       if (guildIconURL) auctionEmbed.setThumbnail(guildIconURL);
 
       const auctionFiles: AttachmentBuilder[] = [];
-      if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-        auctionFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      if (fs.existsSync(AUCTION_BANNER_PATH)) {
+        auctionFiles.push(new AttachmentBuilder(AUCTION_BANNER_PATH, { name: "dragon_text_banner.webp" }));
         auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
@@ -3724,8 +3750,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (guildIconURL) embed.setThumbnail(guildIconURL);
 
     const files: AttachmentBuilder[] = [];
-    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
-      files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+    const shopcatBannerPath = SHOPCAT_BANNER_PATH[category] ?? DRAGON_TEXT_BANNER_PATH;
+    if (fs.existsSync(shopcatBannerPath)) {
+      files.push(new AttachmentBuilder(shopcatBannerPath, { name: "dragon_text_banner.webp" }));
       embed.setImage("attachment://dragon_text_banner.webp");
     }
 
@@ -3832,6 +3859,13 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setColor(0x2ecc71)
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
+    const buycatFiles: AttachmentBuilder[] = [];
+    const buycatBannerPath = BUYCAT_BANNER_PATH[category];
+    if (buycatBannerPath && fs.existsSync(buycatBannerPath)) {
+      buycatFiles.push(new AttachmentBuilder(buycatBannerPath, { name: "dragon_text_banner.webp" }));
+      embed.setImage("attachment://dragon_text_banner.webp");
+    }
+
     // NOTE: بنستخدم نفس customId "buy_<roomId>" بتاع الـ handler الأصلي —
     //       ده أهم حاجة عشان منكررش منطق إنشاء التذكرة تاني.
     const roomButtons = rooms.map((r) =>
@@ -3847,7 +3881,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...roomButtons.slice(i, i + 5)));
     }
 
-    await interaction.editReply({ embeds: [embed], components });
+    await interaction.editReply({ embeds: [embed], files: buycatFiles, components });
     return;
   }
 
