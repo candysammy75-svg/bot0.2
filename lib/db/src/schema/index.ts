@@ -38,6 +38,8 @@ export const roomsTable = pgTable("rooms", {
   offersCount:       integer("offers_count").notNull().default(0),  // منشنات @offers المرفقة
   hereCount:         integer("here_count").notNull().default(0),    // منشنات @here المرفقة
   everyoneCount:     integer("everyone_count").notNull().default(0),// منشنات @everyone المرفقة
+  ordersCount:       integer("orders_count").notNull().default(0),  // منشنات @طلبيات المرفقة
+  auctionCount:      integer("auction_count").notNull().default(0), // منشنات @مزاد المرفقة
   discordCategoryId: text("discord_category_id"),                   // Discord Category ID
   createdAt:         timestamp("created_at").defaultNow(),
 });
@@ -104,6 +106,8 @@ export const botUsersTable = pgTable("bot_users", {
   offersBalance:   integer("offers_balance").notNull().default(0),
   hereBalance:     integer("here_balance").notNull().default(0),
   everyoneBalance: integer("everyone_balance").notNull().default(0),
+  ordersBalance:   integer("orders_balance").notNull().default(0),
+  auctionBalance:  integer("auction_balance").notNull().default(0),
   isBanned:        boolean("is_banned").notNull().default(false),
   bannedUntil:     timestamp("banned_until"),               // null = دائم أو مش محظور
   warningCount:    integer("warning_count").notNull().default(0),
