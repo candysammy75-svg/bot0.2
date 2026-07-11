@@ -146,6 +146,13 @@ const PEEPO_EMOJI = {
   animated: true,
 };
 
+/** إيموجي الشراء الموحّد — بيستخدم بدل 🛒 في كل حتة في قائمة الشراء المباشر (/buy) */
+const BUY_EMOJI = {
+  id:       "1524536738360328347",
+  name:     "rfn",
+  animated: true,
+};
+
 /**
  * قائمة الـ 21 إضافة — كل إضافة ليها:
  *   key:   مفتاح فريد بالإنجليزية (بيتخزن في DB وبيستخدم في customId للأزرار)
@@ -1882,8 +1889,8 @@ async function sendBuyPanel(channel: TextChannel) {
     new ButtonBuilder()
       .setCustomId(`buycat_${cat}`)
       .setLabel(`شراء ${cat}`)
-      .setStyle(ButtonStyle.Success)
-      .setEmoji("🛒")
+      .setStyle(ButtonStyle.Secondary)
+      .setEmoji(BUY_EMOJI)
   );
 
   const rows: ActionRowBuilder<ButtonBuilder>[] = [];
@@ -3757,26 +3764,29 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         .setColor(0x2ecc71)
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
 
-      // NOTE: منشنات (everyone/here/offers) بتستخدم نفس customId بتاع مودال الكمية
+      // NOTE: نفس شكل أزرار "أسعار الإضافات" بالظبط (Secondary + إيموجي موحّد) —
+      //       بس هنا بتودّي على طول لخطوة الدفع من غير عرض سعر.
+      //       منشنات (everyone/here/offers) بتستخدم نفس customId بتاع مودال الكمية
       //       (buy_mention_*) عشان تفتح المودال على طول من غير مرحلة سعر.
       //       باقي الإضافات بتستخدم quickbuy_addon_<key> اللي بيتحقق من صحة
       //       الطلب (مثلاً هل عندك متجر) وبعدين يودّيك على طول لزرار الدفع.
       const buttons = [
-        new ButtonBuilder().setCustomId("buy_mention_everyone").setLabel("📢 منشن @everyone").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("buy_mention_here").setLabel("📣 منشن @here").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("🔔 منشن @offers").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("🔒 تفعيل المتجر").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("⚠️ إزالة تحذير").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("✏️ تغيير اسم المتجر").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("🤝 إضافة شريك").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("🗑️ إزالة شريك").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("✍️ خطوط تلقائيه").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("📢 نشر تلقائي").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_mention_everyone").setLabel("منشن @everyone").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("buy_mention_here").setLabel("منشن @here").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("منشن @offers").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("تفعيل المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("إزالة تحذير").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("تغيير اسم المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("إضافة شريك").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("إزالة شريك").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("خطوط تلقائيه").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("نشر تلقائي").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
       ];
 
       const components: ActionRowBuilder<ButtonBuilder>[] = [];
-      for (let i = 0; i < buttons.length; i += 5) {
-        components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons.slice(i, i + 5)));
+      for (const rowSize of ADDON_ROW_SIZES) {
+        const slice = buttons.splice(0, rowSize);
+        if (slice.length > 0) components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...slice));
       }
 
       await interaction.editReply({ embeds: [embed], components });
@@ -3793,9 +3803,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
       // NOTE: نفس customId بتاع buy_auc_mention_* الأصلي — بيودّيك على طول لأمر التحويل.
       const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone`).setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel(`${AUCTION_TYPES.here.emoji} @here`).setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel(`${AUCTION_TYPES.offers.emoji} @offers`).setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel("@everyone").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel("@here").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel("@offers").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
       );
 
       await interaction.editReply({ embeds: [embed], components: [row] });
@@ -3811,7 +3821,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     const embed = new EmbedBuilder()
-      .setTitle(`🛒 شراء — ${category}`)
+      .setTitle(`شراء — ${category}`)
       .setDescription("اضغط على النوع اللي عايز تشتريه — هتتفتح لك تذكرة فوراً")
       .setColor(0x2ecc71)
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
@@ -3821,8 +3831,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const roomButtons = rooms.map((r) =>
       new ButtonBuilder()
         .setCustomId(`buy_${r.id}`)
-        .setLabel(`🛒 ${roomLabel(r.name)}`)
-        .setStyle(ButtonStyle.Primary)
+        .setLabel(roomLabel(r.name))
+        .setEmoji(BUY_EMOJI)
+        .setStyle(ButtonStyle.Secondary)
     );
 
     const components: ActionRowBuilder<ButtonBuilder>[] = [];
