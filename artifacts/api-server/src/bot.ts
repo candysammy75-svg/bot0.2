@@ -1846,6 +1846,13 @@ async function sendShopPanel(channel: TextChannel) {
     rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...categoryButtons.slice(i, i + 5)));
   }
 
+  // زرار "🛒 شراء" — فتح قائمة شراء منفصلة تماماً عن أزرار الأسعار فوق (openbuymenu)
+  rows.push(
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("openbuymenu").setLabel("🛒 شراء").setStyle(ButtonStyle.Success)
+    )
+  );
+
   const files: AttachmentBuilder[] = [];
   const guildIconURL = channel.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
@@ -1862,6 +1869,80 @@ async function sendShopPanel(channel: TextChannel) {
   }
 
   await channel.send({ embeds: [embed], files, components: rows });
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  createAutoPublishTicket — بيفتح تذكرة نشر تلقائي ويسيب اليوزر يختار المدة
+//  NOTE: ده هو "الشراء الفعلي" لإضافة النشر التلقائي — بيتنادى من
+//        quickbuy_addon_auto_publish (قائمة الشراء المنفصلة). الشروط
+//        (عنده متجر / مفيش نشر شغال أو معلق) لازم تتحقق قبل ما تنادي الدالة دي.
+// ══════════════════════════════════════════════════════════════════════════════
+async function createAutoPublishTicket(
+  interaction: import("discord.js").ButtonInteraction,
+  guild: import("discord.js").Guild,
+  userId: string,
+  username: string,
+) {
+  const ticketChannel = await guild.channels.create({
+    name:   `publish-${username}`,
+    type:   ChannelType.GuildText,
+    parent: TICKETS_CATEGORY_ID,
+    permissionOverwrites: [
+      { id: guild.id,             deny:  [PermissionFlagsBits.ViewChannel] },
+      { id: userId,               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+      { id: guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
+    ],
+  });
+
+  const DIV_AP  = "ـﮩ════════════════ﮩـ";
+  const gIAP    = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+  const apEmbed = new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: gIAP })
+    .setTitle(`📢 النشر التلقائي في متجرك`)
+    .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_AP}`)
+    .setColor(0x9b59b6)
+    .addFields(
+      {
+        name:  `${STAR_EMOJI} السعر`,
+        value: `> ${MONEY_EMOJI} **${AUTO_PUBLISH_PRICE_PER_DAY.toLocaleString()}** كريدت / يوم\n> ${DIV_AP}`,
+        inline: false,
+      },
+      {
+        name:  `${STAR_EMOJI} الخطوة التالية`,
+        value: `> اختار المدة من القائمة تحت ⬇️\n> ${DIV_AP}`,
+        inline: false,
+      },
+    )
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAP });
+
+  const apFiles: AttachmentBuilder[] = [];
+  if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+    apFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+    apEmbed.setImage("attachment://dragon_text_banner.webp");
+  }
+
+  const durationSelect = new StringSelectMenuBuilder()
+    .setCustomId(`autopub_duration_${userId}`)
+    .setPlaceholder("⏱ اختار المدة")
+    .addOptions(
+      new StringSelectMenuOptionBuilder().setLabel("يوم واحد").setValue("1").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 1).toLocaleString()} كريدت`).setEmoji("1️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("يومين").setValue("2").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 2).toLocaleString()} كريدت`).setEmoji("2️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("3 أيام").setValue("3").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 3).toLocaleString()} كريدت`).setEmoji("3️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("4 أيام").setValue("4").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 4).toLocaleString()} كريدت`).setEmoji("4️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("5 أيام").setValue("5").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 5).toLocaleString()} كريدت`).setEmoji("5️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("6 أيام").setValue("6").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 6).toLocaleString()} كريدت`).setEmoji("6️⃣"),
+      new StringSelectMenuOptionBuilder().setLabel("أسبوع كامل (7 أيام)").setValue("7").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 7).toLocaleString()} كريدت`).setEmoji("7️⃣"),
+    );
+
+  await ticketChannel.send({
+    content:    `<@${userId}>`,
+    embeds:     [apEmbed],
+    files:      apFiles,
+    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(durationSelect)],
+  });
+
+  await interaction.editReply({ content: `✅ افتحت لك تذكرة في <#${ticketChannel.id}> — اختار المدة من هناك!` });
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3539,24 +3620,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         auctionEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      // ── أزرار الشراء — كل زرار يفتح flow الإعلان المباشر ───────────────
-      const buyRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-        new ButtonBuilder()
-          .setCustomId("buy_auc_mention_everyone")
-          .setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone — ${calcTransferAmount(AUCTION_TYPES.everyone.price).toLocaleString()} كريدت`)
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId("buy_auc_mention_here")
-          .setLabel(`${AUCTION_TYPES.here.emoji} @here — ${calcTransferAmount(AUCTION_TYPES.here.price).toLocaleString()} كريدت`)
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId("buy_auc_mention_offers")
-          .setLabel(`${AUCTION_TYPES.offers.emoji} @offers — ${calcTransferAmount(AUCTION_TYPES.offers.price).toLocaleString()} كريدت`)
-          .setStyle(ButtonStyle.Primary),
-      );
-
-      // الأسعار + أزرار الشراء → نفس الشانل اللي ضغط فيه (رد عادي مش ephemeral)
-      await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles, components: [buyRow] });
+      // NOTE: أزرار الشراء اتشالت من هنا — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
+      //       الإمبيد ده بقى لعرض الأسعار فقط.
+      await interaction.editReply({ embeds: [auctionEmbed], files: auctionFiles });
 
       // ── شانل المزاد: شرح — مرة واحدة فقط للأبد ─────────────────────────
       // NOTE: auctionInfoMsgId بيتعبى من الشانل عند كل restart.
@@ -3632,6 +3698,244 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
+  // ══════════════════════════════════════════════════════════════════════════
+  //  قائمة "🛒 شراء" — منفصلة تماماً عن قائمة الأسعار (shopcat_/roominfo_/addoninfo_).
+  //  مفيش سعر بيظهر هنا؛ الضغط على أي حاجة يودّي على طول لخطوة الدفع/أمر التحويل.
+  // ══════════════════════════════════════════════════════════════════════════
+
+  // ── زرار فتح قائمة الشراء (openbuymenu) ─────────────────────────────────
+  if (interaction.isButton() && interaction.customId === "openbuymenu") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+
+    const embed = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+      .setTitle("🛒 قائمة الشراء")
+      .setDescription("اختار إيه اللي عايز تشتريه من تحت 👇")
+      .setColor(0x2ecc71)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    if (guildIconURL) embed.setThumbnail(guildIconURL);
+
+    const files: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+      files.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+      embed.setImage("attachment://dragon_text_banner.webp");
+    }
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("buymenu_rooms").setLabel("🏠 شراء رومات").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("buymenu_addons").setLabel("➕ شراء إضافات").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId("buymenu_auction").setLabel("🏷️ شراء مزاد").setStyle(ButtonStyle.Success),
+    );
+
+    await interaction.editReply({ embeds: [embed], files, components: [row] });
+    return;
+  }
+
+  // ── زرار "شراء رومات" (buymenu_rooms) — قائمة الفئات من غير أسعار ────────
+  if (interaction.isButton() && interaction.customId === "buymenu_rooms") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const roomCategories = SHOP_CATEGORIES.filter((c) => c !== "الإضافات" && c !== "المزاد");
+
+    const embed = new EmbedBuilder()
+      .setTitle("🏠 شراء رومات — اختار الفئة")
+      .setColor(0x2ecc71)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      ...roomCategories.map((cat) =>
+        new ButtonBuilder().setCustomId(`buyroomcat_${cat}`).setLabel(cat).setStyle(ButtonStyle.Secondary)
+      )
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+    return;
+  }
+
+  // ── زرار فئة رومات للشراء المباشر (buyroomcat_*) ─────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("buyroomcat_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const category = interaction.customId.replace("buyroomcat_", "");
+    const rooms    = await db.select().from(roomsTable).where(eq(roomsTable.category, category));
+
+    if (rooms.length === 0) {
+      await interaction.editReply({ content: `📭 مفيش رومات في فئة **${category}** دلوقتي.` });
+      return;
+    }
+
+    const embed = new EmbedBuilder()
+      .setTitle(`🛒 شراء — ${category}`)
+      .setDescription("اضغط على النوع اللي عايز تشتريه — هتتفتح لك تذكرة فوراً")
+      .setColor(0x2ecc71)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    // NOTE: بنستخدم نفس customId "buy_<roomId>" بتاع الـ handler الأصلي —
+    //       ده أهم حاجة عشان منكررش منطق إنشاء التذكرة تاني.
+    const roomButtons = rooms.map((r) =>
+      new ButtonBuilder()
+        .setCustomId(`buy_${r.id}`)
+        .setLabel(`🛒 ${roomLabel(r.name)}`)
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    const components: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let i = 0; i < roomButtons.length; i += 5) {
+      components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...roomButtons.slice(i, i + 5)));
+    }
+
+    await interaction.editReply({ embeds: [embed], components });
+    return;
+  }
+
+  // ── زرار "شراء إضافات" (buymenu_addons) — قائمة الإضافات من غير أسعار ────
+  if (interaction.isButton() && interaction.customId === "buymenu_addons") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const embed = new EmbedBuilder()
+      .setTitle("➕ شراء إضافات")
+      .setDescription("اضغط على الإضافة اللي عايز تشتريها")
+      .setColor(0x2ecc71)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    // NOTE: منشنات (everyone/here/offers) بتستخدم نفس customId بتاع مودال الكمية
+    //       (buy_mention_*) عشان تفتح المودال على طول من غير مرحلة سعر.
+    //       باقي الإضافات بتستخدم quickbuy_addon_<key> اللي بيتحقق من صحة
+    //       الطلب (مثلاً هل عندك متجر) وبعدين يودّيك على طول لزرار الدفع.
+    const buttons = [
+      new ButtonBuilder().setCustomId("buy_mention_everyone").setLabel("📢 منشن @everyone").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("buy_mention_here").setLabel("📣 منشن @here").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("🔔 منشن @offers").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("🔒 تفعيل المتجر").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("⚠️ إزالة تحذير").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("✏️ تغيير اسم المتجر").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("🤝 إضافة شريك").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("🗑️ إزالة شريك").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("✍️ خطوط تلقائيه").setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("📢 نشر تلقائي").setStyle(ButtonStyle.Primary),
+    ];
+
+    const components: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let i = 0; i < buttons.length; i += 5) {
+      components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...buttons.slice(i, i + 5)));
+    }
+
+    await interaction.editReply({ embeds: [embed], components });
+    return;
+  }
+
+  // ── زرار "شراء مزاد" (buymenu_auction) — أنواع المنشن من غير أسعار ───────
+  if (interaction.isButton() && interaction.customId === "buymenu_auction") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+    const embed = new EmbedBuilder()
+      .setTitle("🏷️ شراء منشن إعلان مزاد")
+      .setDescription("اختار نوع المنشن اللي عايز تشتريه")
+      .setColor(0x2ecc71)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    // NOTE: نفس customId بتاع buy_auc_mention_* الأصلي — بيودّيك على طول لأمر التحويل.
+    const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId("buy_auc_mention_everyone").setLabel(`${AUCTION_TYPES.everyone.emoji} @everyone`).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("buy_auc_mention_here").setLabel(`${AUCTION_TYPES.here.emoji} @here`).setStyle(ButtonStyle.Primary),
+      new ButtonBuilder().setCustomId("buy_auc_mention_offers").setLabel(`${AUCTION_TYPES.offers.emoji} @offers`).setStyle(ButtonStyle.Primary),
+    );
+
+    await interaction.editReply({ embeds: [embed], components: [row] });
+    return;
+  }
+
+  // ── أزرار الشراء السريع للإضافات (quickbuy_addon_*, quickbuy_change_store_name) ──
+  // NOTE: كل واحدة بتتحقق من نفس الشروط اللي كانت في addoninfo_، وبعدين تعرض
+  //       زرار الدفع الأصلي (pay_*/buy_change_store_name_*) على طول من غير
+  //       عرض سعر منفصل قبلها — نفس منطق الدفع الأصلي متكررش خالص.
+  if (interaction.isButton() && (interaction.customId.startsWith("quickbuy_addon_") || interaction.customId === "quickbuy_change_store_name")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const userId = interaction.user.id;
+
+    const userStore = await db.select().from(purchasesTable)
+      .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
+      .then((rows) => rows.find((p) => p.discordRoomId));
+
+    if (!userStore) {
+      await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
+      return;
+    }
+
+    const confirmEmbed = (title: string) =>
+      new EmbedBuilder().setTitle(title).setColor(0x2ecc71).setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
+
+    if (interaction.customId === "quickbuy_change_store_name") {
+      const btn = new ButtonBuilder().setCustomId(`buy_change_store_name_${userStore.id}`).setLabel("✏️ تأكيد الشراء").setStyle(ButtonStyle.Primary);
+      await interaction.editReply({ embeds: [confirmEmbed("✏️ تغيير اسم المتجر")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    const addonKey = interaction.customId.replace("quickbuy_addon_", "");
+
+    if (addonKey === "activate_store") {
+      if (!userStore.isRoomDeactivated) {
+        await interaction.editReply({ content: "✅ متجرك شغّال ومفيش داعي للتفعيل." });
+        return;
+      }
+      const btn = new ButtonBuilder().setCustomId(`pay_reactivate_room_${userStore.id}`).setLabel("🔒 تأكيد الشراء").setStyle(ButtonStyle.Danger);
+      await interaction.editReply({ embeds: [confirmEmbed("🔒 إعادة تفعيل المتجر")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    if (addonKey === "remove_store_warning") {
+      if (!userStore.roomWarningCount || userStore.roomWarningCount === 0) {
+        await interaction.editReply({ content: `انت نظيف حبي <a:bingusgamingpat:1499748957142646794>` });
+        return;
+      }
+      const btn = new ButtonBuilder().setCustomId(`pay_remove_warning_${userStore.id}`).setLabel("⚠️ تأكيد الشراء").setStyle(ButtonStyle.Danger);
+      await interaction.editReply({ embeds: [confirmEmbed("⚠️ إزالة تحذير من المتجر")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    if (addonKey === "add_partner") {
+      if (userStore.partnerDiscordUserId) {
+        await interaction.editReply({ content: `❌ متجرك عنده شريك بالفعل! (<@${userStore.partnerDiscordUserId}>)\nلازم تشيله الأول بزرار "إزالة شريك".` });
+        return;
+      }
+      const btn = new ButtonBuilder().setCustomId(`pay_add_partner_${userStore.id}`).setLabel("🤝 تأكيد الشراء").setStyle(ButtonStyle.Primary);
+      await interaction.editReply({ embeds: [confirmEmbed("🤝 إضافة شريك للمتجر")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    if (addonKey === "remove_partner") {
+      if (!userStore.partnerDiscordUserId) {
+        await interaction.editReply({ content: "❌ متجرك مفيش فيه شريك." });
+        return;
+      }
+      const btn = new ButtonBuilder().setCustomId(`pay_remove_partner_${userStore.id}`).setLabel("🗑️ تأكيد الشراء").setStyle(ButtonStyle.Danger);
+      await interaction.editReply({ embeds: [confirmEmbed("🗑️ إزالة شريك من المتجر")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    if (addonKey === "auto_lines") {
+      const btn = new ButtonBuilder().setCustomId(`pay_auto_lines_${userStore.id}`).setLabel("✍️ تأكيد الشراء").setStyle(ButtonStyle.Primary);
+      await interaction.editReply({ embeds: [confirmEmbed("✍️ تلقائي للخطوط")], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(btn)] });
+      return;
+    }
+
+    if (addonKey === "auto_publish") {
+      if (activeAutoPublishes.has(userId)) {
+        await interaction.editReply({ content: "⏳ عندك نشر تلقائي شغّال بالفعل. خلّيه يخلص الأول." });
+        return;
+      }
+      if (pendingAutoPublishes.has(userId)) {
+        await interaction.editReply({ content: "⏳ عندك طلب نشر تلقائي لسه معلّق. خلّيه يخلص الأول." });
+        return;
+      }
+      await createAutoPublishTicket(interaction, interaction.guild!, userId, interaction.user.username);
+      return;
+    }
+
+    await interaction.editReply({ content: "❌ الإضافة مش متاحة للشراء المباشر." });
+    return;
+  }
+
   // ── زرار سعر إضافة (addoninfo_*) ────────────────────────────────────────
   if (interaction.isButton() && interaction.customId.startsWith("addoninfo_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -3683,15 +3987,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         priceEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const buyRenameBtn = new ButtonBuilder()
-        .setCustomId(`buy_change_store_name_${userStore.id}`)
-        .setLabel("✏️ شراء تغيير الاسم")
-        .setStyle(ButtonStyle.Primary);
-
+      // NOTE: زرار الشراء اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [priceEmbed],
-        files:      sFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyRenameBtn)],
+        embeds: [priceEmbed],
+        files:  sFiles,
       });
       return;
     }
@@ -3735,15 +4034,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         pricesEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const buyBtn = new ButtonBuilder()
-        .setCustomId(cfg.buyId)
-        .setLabel("🛒 شراء منشن")
-        .setStyle(ButtonStyle.Primary);
-
+      // NOTE: زرار الشراء اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [pricesEmbed],
-        files:      bannerFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyBtn)],
+        embeds: [pricesEmbed],
+        files:  bannerFiles,
       });
       return;
     }
@@ -3787,15 +4081,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         actEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const payReactBtn = new ButtonBuilder()
-        .setCustomId(`pay_reactivate_room_${userStore.id}`)
-        .setLabel(`💸 دفع رسوم التفعيل`)
-        .setStyle(ButtonStyle.Danger);
-
+      // NOTE: زرار الدفع اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [actEmbed],
-        files:      actFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payReactBtn)],
+        embeds: [actEmbed],
+        files:  actFiles,
       });
       return;
     }
@@ -3848,63 +4137,23 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         rwEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const payWarnBtn = new ButtonBuilder()
-        .setCustomId(`pay_remove_warning_${userStore.id}`)
-        .setLabel(`💸 إزالة تحذير — ${transferAmt.toLocaleString()} كريدت`)
-        .setStyle(ButtonStyle.Danger);
-
+      // NOTE: زرار الدفع اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [rwEmbed],
-        files:      rwFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payWarnBtn)],
+        embeds: [rwEmbed],
+        files:  rwFiles,
       });
       return;
     }
 
     // ── حالة خاصة: النشر التلقائي ─────────────────────────────────────────────
     if (key === "auto_publish") {
-      const userId    = interaction.user.id;
-      const username  = interaction.user.username;
-      const userStore = await db.select().from(purchasesTable)
-        .where(and(eq(purchasesTable.discordUserId, userId), eq(purchasesTable.status, "completed")))
-        .then((rows) => rows.find((p) => p.discordRoomId));
-
-      if (!userStore) {
-        await interaction.editReply({ content: `هو انت عندك متجر اساسا ؟ <a:ZA_TOM:1500527266055323848>` });
-        return;
-      }
-
-      if (activeAutoPublishes.has(userId)) {
-        await interaction.editReply({ content: "⏳ عندك نشر تلقائي شغّال بالفعل. خلّيه يخلص الأول." });
-        return;
-      }
-
-      if (pendingAutoPublishes.has(userId)) {
-        await interaction.editReply({ content: "⏳ عندك طلب نشر تلقائي لسه معلّق. خلّيه يخلص الأول." });
-        return;
-      }
-
-      const guild = interaction.guild!;
-
-      // افتح تذكرة تحت كاتيجوري التذاكر
-      const ticketChannel = await guild.channels.create({
-        name:   `publish-${username}`,
-        type:   ChannelType.GuildText,
-        parent: TICKETS_CATEGORY_ID,
-        permissionOverwrites: [
-          { id: guild.id,             deny:  [PermissionFlagsBits.ViewChannel] },
-          { id: userId,               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
-          { id: guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
-        ],
-      });
-
+      // NOTE: ده بقى عرض سعر بس — فتح التذكرة الفعلي بقى من قائمة "🛒 شراء" المنفصلة (quickbuy_addon_auto_publish).
       const DIV_AP  = "ـﮩ════════════════ﮩـ";
-      const gIAP    = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const gIAP    = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
       const apEmbed = new EmbedBuilder()
         .setAuthor({ name: "Dragon $hop", iconURL: gIAP })
         .setTitle(`📢 النشر التلقائي في متجرك`)
-        .setDescription(`<@${userId}> ${MONEY_EMOJI}\n> ${DIV_AP}`)
         .setColor(0x9b59b6)
         .addFields(
           {
@@ -3917,11 +4166,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
             value: `> 🔄 نشر كل **6 ساعات** طول المدة\n> ${DIV_AP}`,
             inline: false,
           },
-          {
-            name:  `${STAR_EMOJI} الخطوة التالية`,
-            value: `> اختار المدة من القائمة تحت ⬇️\n> ${DIV_AP}`,
-            inline: false,
-          },
         )
         .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAP });
 
@@ -3931,27 +4175,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         apEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const durationSelect = new StringSelectMenuBuilder()
-        .setCustomId(`autopub_duration_${userId}`)
-        .setPlaceholder("⏱ اختار المدة")
-        .addOptions(
-          new StringSelectMenuOptionBuilder().setLabel("يوم واحد").setValue("1").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 1).toLocaleString()} كريدت`).setEmoji("1️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("يومين").setValue("2").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 2).toLocaleString()} كريدت`).setEmoji("2️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("3 أيام").setValue("3").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 3).toLocaleString()} كريدت`).setEmoji("3️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("4 أيام").setValue("4").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 4).toLocaleString()} كريدت`).setEmoji("4️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("5 أيام").setValue("5").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 5).toLocaleString()} كريدت`).setEmoji("5️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("6 أيام").setValue("6").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 6).toLocaleString()} كريدت`).setEmoji("6️⃣"),
-          new StringSelectMenuOptionBuilder().setLabel("أسبوع كامل (7 أيام)").setValue("7").setDescription(`${calcTransferAmount(AUTO_PUBLISH_PRICE_PER_DAY * 7).toLocaleString()} كريدت`).setEmoji("7️⃣"),
-        );
-
-      await ticketChannel.send({
-        content:    `<@${userId}>`,
-        embeds:     [apEmbed],
-        files:      apFiles,
-        components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(durationSelect)],
-      });
-
-      await interaction.editReply({ content: `✅ افتحت لك تذكرة في <#${ticketChannel.id}> — اختار المدة من هناك!` });
+      await interaction.editReply({ embeds: [apEmbed], files: apFiles });
       return;
     }
 
@@ -3996,15 +4220,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         alEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const buyAlBtn = new ButtonBuilder()
-        .setCustomId(`pay_auto_lines_${userStore.id}`)
-        .setLabel("🖼️ سعر خط تلقائي")
-        .setStyle(ButtonStyle.Primary);
-
+      // NOTE: زرار الدفع اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [alEmbed],
-        files:      alFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyAlBtn)],
+        embeds: [alEmbed],
+        files:  alFiles,
       });
       return;
     }
@@ -4047,15 +4266,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         apEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const payApBtn = new ButtonBuilder()
-        .setCustomId(`pay_add_partner_${userStore.id}`)
-        .setLabel("💸 دفع وإضافة شريك")
-        .setStyle(ButtonStyle.Primary);
-
+      // NOTE: زرار الدفع اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [apEmbed],
-        files:      apFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payApBtn)],
+        embeds: [apEmbed],
+        files:  apFiles,
       });
       return;
     }
@@ -4097,15 +4311,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         rpEmbed.setImage("attachment://dragon_text_banner.webp");
       }
 
-      const payRpBtn = new ButtonBuilder()
-        .setCustomId(`pay_remove_partner_${userStore.id}`)
-        .setLabel("💸 دفع وإزالة الشريك")
-        .setStyle(ButtonStyle.Danger);
-
+      // NOTE: زرار الدفع اتشال — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
       await interaction.editReply({
-        embeds:     [rpEmbed],
-        files:      rpFiles,
-        components: [new ActionRowBuilder<ButtonBuilder>().addComponents(payRpBtn)],
+        embeds: [rpEmbed],
+        files:  rpFiles,
       });
       return;
     }
@@ -5074,15 +5283,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       embed.setThumbnail("attachment://dragon.webp");
     }
 
-    const buyBtn = new ButtonBuilder()
-      .setCustomId(`buy_${room.id}`)
-      .setLabel(`🛒 شراء ${label}`)
-      .setStyle(ButtonStyle.Primary);
-
+    // NOTE: زرار الشراء اتشال من هنا — الشراء بقى بس من قائمة "🛒 شراء" المنفصلة (openbuymenu).
+    //       الإمبيد ده بقى لعرض الأسعار فقط.
     await interaction.editReply({
-      embeds:     [embed],
+      embeds: [embed],
       files,
-      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(buyBtn)],
     });
     return;
   }
