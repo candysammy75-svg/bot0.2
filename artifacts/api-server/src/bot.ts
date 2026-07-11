@@ -3702,7 +3702,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
 
       // الإيموجيز المخصصة
-      const STAR_EMOJI   = "<a:1111426691680714782:1484902226169430220>";
+      const STAR_EMOJI   = "<a:money:1524536753858285568>";
       const ZOOM_EMOJI   = "<a:aPES_Zoom:1496140715988619274>";
       const PROBOT_EMOJI_AUC = "<a:by_ez_84:1495757810569449603>";
 
