@@ -3775,12 +3775,17 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         new ButtonBuilder().setCustomId("buy_mention_here").setLabel("منشن @here").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("buy_mention_shop").setLabel("منشن @offers").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("quickbuy_addon_activate_store").setLabel("تفعيل المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("إزالة تحذير").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("تغيير اسم المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("إضافة شريك").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_change_store_type").setLabel("تغيير نوع المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_change_store_owner").setLabel("تغيير مالك المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("quickbuy_addon_remove_partner").setLabel("إزالة شريك").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_add_partner").setLabel("إضافة شريك").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_mention_requests").setLabel("منشن طلبات").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_mention_here_requests").setLabel("منشن هير طلبات").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_mention_everyone_requests").setLabel("منشن إيفري طلبات").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_addon_remove_store_warning").setLabel("إزالة تحذير").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("quickbuy_addon_auto_lines").setLabel("خطوط تلقائيه").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
         new ButtonBuilder().setCustomId("quickbuy_addon_auto_publish").setLabel("نشر تلقائي").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("quickbuy_change_store_name").setLabel("تغيير اسم المتجر").setEmoji(BUY_EMOJI).setStyle(ButtonStyle.Secondary),
       ];
 
       const components: ActionRowBuilder<ButtonBuilder>[] = [];
@@ -3929,6 +3934,54 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         return;
       }
       await createAutoPublishTicket(interaction, interaction.guild!, userId, interaction.user.username);
+      return;
+    }
+
+    // ── الإضافات اللي مالهاش أوتوميشن (تغيير نوع/مالك المتجر، طلبات المنشن) ──
+    // NOTE: دول مفيش لهم دفع تلقائي — التنفيذ بيتم يدوياً من الإدارة، فبنفتح
+    //       تذكرة طلب بدل ما نودّي على زرار دفع مش موجود.
+    const REQUEST_TICKET_ADDONS: Record<string, string> = {
+      change_store_type:         "🔄 طلب تغيير نوع المتجر",
+      change_store_owner:        "👤 طلب تغيير مالك المتجر",
+      mention_requests:          "🔔 طلب منشن عروض",
+      mention_here_requests:     "📣 طلب منشن هير",
+      mention_everyone_requests: "📢 طلب منشن إيفري",
+    };
+
+    if (addonKey in REQUEST_TICKET_ADDONS) {
+      const title = REQUEST_TICKET_ADDONS[addonKey]!;
+      const guild = interaction.guild!;
+
+      const [priceRow] = await db.select().from(addonPricesTable).where(eq(addonPricesTable.key, addonKey));
+      const rawPrice    = priceRow ? Number(priceRow.price) : 0;
+      const priceText   = Number.isFinite(rawPrice) && rawPrice > 0 ? `${Math.round(rawPrice).toLocaleString()} كريدت` : "غير محدد";
+
+      const ticketChannel = await guild.channels.create({
+        name:   `request-${interaction.user.username}`,
+        type:   ChannelType.GuildText,
+        parent: TICKETS_CATEGORY_ID,
+        permissionOverwrites: [
+          { id: guild.id,             deny:  [PermissionFlagsBits.ViewChannel] },
+          { id: userId,               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+          { id: guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
+        ],
+      });
+
+      const DIV_RQ = "ـﮩ════════════════ﮩـ";
+      const gIRQ   = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+      const rqEmbed = new EmbedBuilder()
+        .setAuthor({ name: "Dragon $hop", iconURL: gIRQ })
+        .setTitle(title)
+        .setDescription(
+          `<@${userId}>\n> ${DIV_RQ}\n\n` +
+          `> ${MONEY_EMOJI} **السعر:** ${priceText}\n` +
+          `> ⏳ الإدارة هتراجع طلبك وترد عليك هنا\n> ${DIV_RQ}`
+        )
+        .setColor(0x9b59b6)
+        .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIRQ });
+
+      await ticketChannel.send({ content: `<@${userId}> <@${OWNER_ID}>`, embeds: [rqEmbed] });
+      await interaction.editReply({ content: `✅ افتحت لك تذكرة طلب في <#${ticketChannel.id}> — استنى رد الإدارة!` });
       return;
     }
 
