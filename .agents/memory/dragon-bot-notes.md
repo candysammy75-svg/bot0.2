@@ -1,10 +1,11 @@
 ---
-name: Dragon Shop Bot notes
-description: Conventions of the Discord shop bot (artifacts/api-server) — where logic lives, how ownership/admin checks work.
+name: Dragon Shop Bot conventions
+description: Discord bot architecture notes for the Dragon Shop bot — mention-balance systems, room ownership, admin checks.
 ---
 
-- All Discord.js bot logic lives in one large file, `artifacts/api-server/src/bot.ts` (~6900+ lines). Interaction handlers are a long chain of `if (interaction.isButton() && interaction.customId.startsWith(...))` blocks in a single `Events.InteractionCreate` listener, and message moderation/logic lives in one `Events.MessageCreate` listener. New features should follow this existing pattern rather than introducing a new router/module structure, to stay consistent.
-- A "room channel" (`purchasesTable` row with `status: "completed"`, `discordRoomId`) represents a customer's purchased store/room. `discordUserId` on that row is the store owner; `partnerDiscordUserId` (nullable) is a co-owner with equal permissions.
-- "Admin" throughout the bot means anyone with the Discord `Administrator` permission on the guild — there is no separate fixed admin role ID. Use `member.permissions.has(PermissionFlagsBits.Administrator)` (or fetch all guild members and filter) rather than checking a role ID.
-- DB schema changes require `cd lib/db && pnpm run push` (drizzle-kit push) before restarting the `Dragon Bot` workflow, or the app will read/write against a stale schema.
-- Required secrets to run at all: `DISCORD_TOKEN`, `OWNER_ID`, `GUILD_ID` (module-level `throw` in bot.ts if missing — the whole process crashes on boot without them, not just Discord features).
+- Single giant `bot.ts` handles all Discord logic. "Room channel" == purchased store. Admins = Administrator permission, not a fixed role.
+- There are **two unrelated "mention" subsystems** — do not conflate them when extending:
+  1. **Persistent mention-balance economy** (`offersBalance`/`hereBalance`/`everyoneBalance`/`ordersBalance`/`auctionBalance` on `bot_users`): a role (e.g. `OFFERS_ROLE_ID`, `ORDERS_ROLE_ID`, `AUCTION_ROLE_ID`) is granted while balance > 0, decremented by 1 per use detected in a room-owner's channel, exempted from AutoMod's mention-block via keyword allowlist, revoked with a cooldown after use. Purchased via `buy_mention_*` buttons → qty modal → ProBot transfer confirmation (`MentionKey` type, `pendingMentionPurchases` map).
+  2. **Auction-ad announcement pricing** (`AUCTION_TYPES`/`AuctionType`, `buy_auc_mention_*`): a one-time payment to announce a *scheduled bidding auction* with a chosen mention tier (@everyone/@here/@offers). Not a balance, not tied to AutoMod exemption.
+- When adding a new mention-balance type (e.g. "orders"/"auction"), it touches ~10+ call sites: role ID constant, `MentionKey` type, AutoMod keyword list, message mention-detection regex + deduction block, balance display embed (`!منشن`), `MENTION_BUY_KEYS`/`MENTION_BUY_CONFIG`/`MENTION_MODAL_CONFIG` maps, ProBot-confirmation balKey ternary, `/givebalance` command + its choices, and `/auto-publish` mentionType plumbing (type unions, validTypes, balKey ternary, mentionText ternary). Grep for `OFFERS_ROLE_ID` and `offersBalance` to find all of them.
+- Per-room-tier free grants (`STATIC_ROOMS`, `offersCount`/`hereCount`/`everyoneCount`) are separate from the addon-purchase path — extending a new mention type does not require adding a per-tier grant unless explicitly requested.
