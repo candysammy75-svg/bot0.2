@@ -1364,7 +1364,7 @@ interface StaticRoom {
 const STATIC_ROOMS: Record<string, StaticRoom[]> = {
   "المتاجر": [
     {
-      name: "bronze",    price: 2000000,  decorations: "🧱",
+      name: "bronze",    price: 2000000,  decorations: "💠",
       offersCount: 10, hereCount: 7,  everyoneCount: 5,
       discordCategoryId: "1521225661145026560",
     },
