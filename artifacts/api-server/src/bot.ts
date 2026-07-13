@@ -1258,6 +1258,7 @@ const DRAGON_TEXT_BANNER_PATH = path.join(ASSETS_DIR, "dragon_text_banner.webp")
 const STORES_TYPES_BANNER_PATH  = path.join(ASSETS_DIR, "dragon_text_banner_stores_types.webp");
 const STORES_RULES_BANNER_PATH  = path.join(ASSETS_DIR, "dragon_text_banner_stores_rules.webp");
 const STORES_PRICES_BANNER_PATH = path.join(ASSETS_DIR, "dragon_text_banner_stores_prices.webp");
+const STORES_RULES_LINE_PATH    = path.join(ASSETS_DIR, "dragon_line_stores_rules.webp");
 const ORDERS_BANNER_PATH        = path.join(ASSETS_DIR, "dragon_text_banner_orders.webp");
 const AUCTION_BANNER_PATH       = path.join(ASSETS_DIR, "dragon_text_banner_auction.webp");
 const ADDONS_BANNER_PATH        = path.join(ASSETS_DIR, "dragon_text_banner_addons.webp");
@@ -6629,18 +6630,19 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setColor(0xf5c518)
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLSR });
 
-    if (fs.existsSync(STORES_RULES_BANNER_PATH)) {
-      await targetChannel.send({
-        files: [new AttachmentBuilder(STORES_RULES_BANNER_PATH, { name: "dragon_text_banner.webp" })],
-      }).catch(() => {});
-    }
-
     const rulesFilesSR: AttachmentBuilder[] = [];
     if (fs.existsSync(STORES_RULES_BANNER_PATH)) {
       rulesFilesSR.push(new AttachmentBuilder(STORES_RULES_BANNER_PATH, { name: "dragon_text_banner_stores_rules.webp" }));
       rulesEmbedSR.setImage("attachment://dragon_text_banner_stores_rules.webp");
     }
     await targetChannel.send({ embeds: [rulesEmbedSR], files: rulesFilesSR }).catch(() => {});
+
+    // ── الخط (line) بيتبعت بعد الإمبيد، مش قبله ──────────────────────────
+    if (fs.existsSync(STORES_RULES_LINE_PATH)) {
+      await targetChannel.send({
+        files: [new AttachmentBuilder(STORES_RULES_LINE_PATH, { name: "dragon_line_stores_rules.webp" })],
+      }).catch(() => {});
+    }
 
     await interaction.editReply({ content: "✅ تم إرسال إمبيد الخط وقوانين المتاجر." });
     return;
