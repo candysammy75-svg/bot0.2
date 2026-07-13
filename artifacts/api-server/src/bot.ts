@@ -2194,6 +2194,10 @@ client.once(Events.ClientReady, async () => {
           )
       ),
 
+    new SlashCommandBuilder()
+      .setName("storerules")
+      .setDescription("👑 [أونر/أدمن] ابعت إمبيد الخط وقوانين المتاجر في هذا الروم"),
+
     // ── أوامر أكواد البروموشن (Promo Codes) ──────────────────────────────────
     new SlashCommandBuilder()
       .setName("addpromocode")
@@ -6585,6 +6589,61 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       `   📢 ${r.offersCount} offers | 📣 ${r.hereCount} here | 🔊 ${r.everyoneCount} everyone`
     );
     await interaction.editReply({ content: `**📋 قائمة الرومات:**\n\n${lines.join("\n\n")}` });
+  }
+
+  // ── /storerules ───────────────────────────────────────────────────────────
+  // NOTE: بيبعت نفس بانر + إمبيد "قوانين المتاجر" اللي بيتبعت تلقائي في روم
+  //       العميل الجديد (نفس STORES_RULES_BANNER_PATH و rulesText).
+  if (interaction.commandName === "storerules") {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (
+      interaction.user.id !== OWNER_ID &&
+      !interaction.memberPermissions?.has(PermissionFlagsBits.Administrator)
+    ) {
+      await interaction.editReply({ content: "❌ محتاج صلاحية Administrator." });
+      return;
+    }
+
+    const targetChannel = interaction.channel as TextChannel;
+    const guildIconURLSR = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+    const DIV_SR = "ـﮩ════════════════ﮩـ";
+
+    const rulesTextSR =
+      `> 1️⃣ ممنوع السب أو نشر أي نوع من المحتوى الغير لائق أو التلميح له\n` +
+      `> ${DIV_SR}\n` +
+      `> 2️⃣ ممنوع نشر أي نوع من اللينكات\n` +
+      `> ${DIV_SR}\n` +
+      `> 3️⃣ لا تحاول استخدام منشنات أكثر من رصيدك\n` +
+      `> ${DIV_SR}\n` +
+      `> 4️⃣ ممنوع الترويج للسيرفرات\n` +
+      `> ${DIV_SR}\n` +
+      `> 5️⃣ ممنوع الإسبام\n` +
+      `> ${DIV_SR}`;
+
+    const rulesEmbedSR = new EmbedBuilder()
+      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURLSR })
+      .setTitle(`📋 قوانين المتاجر`)
+      .setDescription(`> ${DIV_SR}\n> اتبع القوانين دي عشان تضمن استمرار متجرك.\n> ${DIV_SR}`)
+      .setThumbnail(guildIconURLSR ?? null)
+      .addFields({ name: `📋 القوانين`, value: rulesTextSR, inline: false })
+      .setColor(0xf5c518)
+      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLSR });
+
+    if (fs.existsSync(STORES_RULES_BANNER_PATH)) {
+      await targetChannel.send({
+        files: [new AttachmentBuilder(STORES_RULES_BANNER_PATH, { name: "dragon_text_banner.webp" })],
+      }).catch(() => {});
+    }
+
+    const rulesFilesSR: AttachmentBuilder[] = [];
+    if (fs.existsSync(DRAGON_BANNER_PATH)) {
+      rulesFilesSR.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+      rulesEmbedSR.setImage("attachment://dragon_banner.webp");
+    }
+    await targetChannel.send({ embeds: [rulesEmbedSR], files: rulesFilesSR }).catch(() => {});
+
+    await interaction.editReply({ content: "✅ تم إرسال إمبيد الخط وقوانين المتاجر." });
+    return;
   }
 
   // ── /synccategories ───────────────────────────────────────────────────────
