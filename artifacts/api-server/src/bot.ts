@@ -1249,7 +1249,7 @@ function encodeArabicFranco(text: string): string {
 
 /** إيموجيات الـ embed الرئيسية */
 const STAR_EMOJI  = "<a:yellowstar:1496143576759930901>";
-const MONEY_EMOJI = "<a:Peepo_Money:1521134361829707778>";
+const MONEY_EMOJI = "<a:1122112:1524694428386852929>";
 
 /**
  * بيحول نص عادي لنص Bold بيستخدم Unicode Mathematical Bold letters.
