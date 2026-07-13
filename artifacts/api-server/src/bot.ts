@@ -6636,9 +6636,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     const rulesFilesSR: AttachmentBuilder[] = [];
-    if (fs.existsSync(DRAGON_BANNER_PATH)) {
-      rulesFilesSR.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
-      rulesEmbedSR.setImage("attachment://dragon_banner.webp");
+    if (fs.existsSync(STORES_RULES_BANNER_PATH)) {
+      rulesFilesSR.push(new AttachmentBuilder(STORES_RULES_BANNER_PATH, { name: "dragon_text_banner_stores_rules.webp" }));
+      rulesEmbedSR.setImage("attachment://dragon_text_banner_stores_rules.webp");
     }
     await targetChannel.send({ embeds: [rulesEmbedSR], files: rulesFilesSR }).catch(() => {});
 
