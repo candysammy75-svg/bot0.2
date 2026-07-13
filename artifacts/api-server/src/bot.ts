@@ -6623,10 +6623,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
     const rulesEmbedSR = new EmbedBuilder()
       .setAuthor({ name: "Dragon $hop", iconURL: guildIconURLSR })
-      .setTitle(`📋 قوانين المتاجر`)
+      .setTitle(`<a:C983:1526072321620574218> قوانين المتاجر`)
       .setDescription(`> ${DIV_SR}\n> اتبع القوانين دي عشان تضمن استمرار متجرك.\n> ${DIV_SR}`)
       .setThumbnail(guildIconURLSR ?? null)
-      .addFields({ name: `📋 القوانين`, value: rulesTextSR, inline: false })
+      .addFields({ name: `<a:C983:1526072321620574218> القوانين`, value: rulesTextSR, inline: false })
       .setColor(0xf5c518)
       .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURLSR });
 
