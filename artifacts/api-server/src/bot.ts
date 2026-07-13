@@ -906,6 +906,46 @@ async function addWarning(
   return { warningCount, banned: false };
 }
 
+/**
+ * بيبني إمبيد تحذير موحّد الشكل (بدل رسائل الخاص القديمة).
+ * @param userId    اليوزر المقصود بالتحذير (بيتم منشنه في الوصف).
+ * @param title     عنوان الإمبيد (مثلاً "تحذير 1/3" أو "تم الحظر").
+ * @param description نص التحذير نفسه.
+ * @param guild     السيرفر (لو موجود بيتحط أيقونته في الـ author/footer).
+ */
+function buildWarningEmbed(
+  userId: string,
+  title: string,
+  description: string,
+  guild?: import("discord.js").Guild | null,
+): EmbedBuilder {
+  const guildIconURL = guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+  const DIV_WARN = "ـﮩ════════════════ﮩـ";
+  return new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+    .setTitle(`⚠️ ${title}`)
+    .setDescription(`<@${userId}>\n> ${DIV_WARN}\n\n${description}\n\n> ${DIV_WARN}`)
+    .setColor(0xff4444)
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+}
+
+/** بيبعت إمبيد التحذير في نفس الروم (بدل الخاص) — فشل الإرسال بيتجاهل بهدوء. */
+async function sendWarningEmbed(
+  channel: import("discord.js").TextBasedChannel,
+  userId: string,
+  title: string,
+  description: string,
+  guild?: import("discord.js").Guild | null,
+): Promise<void> {
+  try {
+    if ("send" in channel) {
+      await (channel as import("discord.js").TextChannel).send({
+        embeds: [buildWarningEmbed(userId, title, description, guild)],
+      });
+    }
+  } catch {}
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 //  Points Helpers — نظام النقاط (راجع notes/promo-codes.md)
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3077,7 +3117,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
   const banned = await isUserBanned(userId);
   if (banned) {
     await message.delete().catch(() => {});
-    try { await message.author.send("❌ أنت محظور حالياً."); } catch {}
+    await sendWarningEmbed(channel, userId, "محظور حالياً", "❌ أنت محظور حالياً.", message.guild);
     return;
   }
 
@@ -3093,13 +3133,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const { warningCount, banned: nowBanned } = await addWarning(
         userId, username, `استخدام لفظ خارج: "${foundBadWordAuction}"`, content
       );
-      try {
-        await message.author.send(
-          nowBanned
-            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
-            : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId,
+        nowBanned ? "تم الحظر" : `تحذير ${warningCount}/3`,
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
+          : `رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`,
+        message.guild
+      );
       return;
     }
 
@@ -3137,11 +3178,11 @@ client.on(Events.MessageCreate, async (message: Message) => {
     // ── @offers والمزاد ممنوعين في روم الطلبيات — يتحذفوا حتى لو صاحبهم معفي من AutoMod ──
     if (usedOffersO || usedAuctionO) {
       await message.delete().catch(() => {});
-      try {
-        await message.author.send(
-          "❌ روم الطلبيات مسموح فيه منشن @everyone / @here / طلبيات بس — منشن @offers أو مزاد ممنوع هنا."
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId, "منشن ممنوع",
+        "روم الطلبيات مسموح فيه منشن @everyone / @here / طلبيات بس — منشن @offers أو مزاد ممنوع هنا.",
+        message.guild
+      );
       return;
     }
 
@@ -3170,15 +3211,15 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
         if (!hasBalanceO) {
           await revokeMentionRole(message.guild, userId);
-          try {
-            await message.author.send(
-              `⛔ رصيد المنشنات خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
-              `📊 الرصيد الحالي:\n` +
-              `  📢 @everyone: ${newEveryoneO}\n` +
-              `  📣 @here: ${newHereO}\n` +
-              `  📦 طلبيات: ${newOrdersO}`
-            );
-          } catch {}
+          await sendWarningEmbed(
+            channel, userId, "رصيد المنشنات خلص",
+            `رصيد المنشنات خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+            `📊 الرصيد الحالي:\n` +
+            `  📢 @everyone: ${newEveryoneO}\n` +
+            `  📣 @here: ${newHereO}\n` +
+            `  📦 طلبيات: ${newOrdersO}`,
+            message.guild
+          );
         } else {
           await revokeMentionRoleWithCooldown(message.guild, userId, MENTION_COOLDOWN_MS);
           const linesO: string[] = [];
@@ -3186,7 +3227,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
           if (usedHereO)     linesO.push(`📣 @here: تبقى ${newHereO} منشن`);
           if (usedOrdersO)   linesO.push(`📦 طلبيات: تبقى ${newOrdersO} منشن`);
           linesO.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
-          try { await message.author.send(linesO.join("\n")); } catch {}
+          await sendWarningEmbed(channel, userId, "تم خصم منشن", linesO.join("\n"), message.guild);
         }
       }
     }
@@ -3225,13 +3266,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const { warningCount, banned: nowBanned } = await addWarning(
         userId, username, `استخدام لفظ خارج: "${foundBadWord}"`, content
       );
-      try {
-        await message.author.send(
-          nowBanned
-            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
-            : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId,
+        nowBanned ? "تم الحظر" : `تحذير ${warningCount}/3`,
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: استخدام ألفاظ خارجة.`
+          : `رسالتك اتحذفت — ممنوع استخدام ألفاظ خارجة.`,
+        message.guild
+      );
       return;
     }
   }
@@ -3331,13 +3373,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const { warningCount, banned: nowBanned } = await addWarning(
         userId, username, "نشر لينك", content
       );
-      try {
-        await message.author.send(
-          nowBanned
-            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: نشر لينك.`
-            : `⚠️ تحذير ${warningCount}/3: رسالتك اتحذفت — ممنوع نشر لينكات.`
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId,
+        nowBanned ? "تم الحظر" : `تحذير ${warningCount}/3`,
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: نشر لينك.`
+          : `رسالتك اتحذفت — ممنوع نشر لينكات.`,
+        message.guild
+      );
       return;
     }
 
@@ -3349,13 +3392,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const { warningCount, banned: nowBanned } = await addWarning(
         userId, username, "محاولة تشفير الكلام يدوياً", content
       );
-      try {
-        await message.author.send(
-          nowBanned
-            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات).`
-            : `⚠️ تحذير ${warningCount}/3: البوت بيشفر الكلام تلقائياً، ممنوع تشفره بنفسك.`
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId,
+        nowBanned ? "تم الحظر" : `تحذير ${warningCount}/3`,
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات).`
+          : `البوت بيشفر الكلام تلقائياً، ممنوع تشفره بنفسك.`,
+        message.guild
+      );
       return;
     }
 
@@ -3365,13 +3409,14 @@ client.on(Events.MessageCreate, async (message: Message) => {
       const { warningCount, banned: nowBanned } = await addWarning(
         userId, username, "اسبام منشن", content
       );
-      try {
-        await message.author.send(
-          nowBanned
-            ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: اسبام منشنات.`
-            : `⚠️ تحذير ${warningCount}/3: ممنوع اسبام المنشنات.`
-        );
-      } catch {}
+      await sendWarningEmbed(
+        channel, userId,
+        nowBanned ? "تم الحظر" : `تحذير ${warningCount}/3`,
+        nowBanned
+          ? `⛔ تم حظرك لمدة 4 أيام (وصلت 3 تحذيرات). آخر تحذير: اسبام منشنات.`
+          : `ممنوع اسبام المنشنات.`,
+        message.guild
+      );
       return;
     }
 
@@ -3433,17 +3478,17 @@ client.on(Events.MessageCreate, async (message: Message) => {
         if (!hasBalance) {
           await revokeMentionRole(message.guild, effectiveId);
           if (partnerId && partnerId !== effectiveId) await revokeMentionRole(message.guild, partnerId).catch(() => {});
-          try {
-            await message.author.send(
-              `⛔ رصيد المنشنات ${isPartner ? "بتاع صاحب الروم" : "بتاعك"} خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
-              `📊 الرصيد الحالي:\n` +
-              `  📢 @everyone: ${newEveryone}\n` +
-              `  📣 @here: ${newHere}\n` +
-              `  🔔 @offers: ${newOffers}\n` +
-              `  📦 طلبيات: ${newOrders}\n` +
-              `  🏷️ مزاد: ${newAuction}`
-            );
-          } catch {}
+          await sendWarningEmbed(
+            channel, userId, "رصيد المنشنات خلص",
+            `رصيد المنشنات ${isPartner ? "بتاع صاحب الروم" : "بتاعك"} خلص — مش هتقدر تمنشن تاني لحد ما الأدمن يجدد.\n` +
+            `📊 الرصيد الحالي:\n` +
+            `  📢 @everyone: ${newEveryone}\n` +
+            `  📣 @here: ${newHere}\n` +
+            `  🔔 @offers: ${newOffers}\n` +
+            `  📦 طلبيات: ${newOrders}\n` +
+            `  🏷️ مزاد: ${newAuction}`,
+            message.guild
+          );
         } else {
           // طبّق الكولداون على الأونر والشريك مع بعض
           await revokeMentionRoleWithCooldown(message.guild, effectiveId, MENTION_COOLDOWN_MS);
@@ -3457,7 +3502,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
           if (usedOrders)   lines.push(`📦 طلبيات: تبقى ${newOrders} منشن`);
           if (usedAuction)  lines.push(`🏷️ مزاد: تبقى ${newAuction} منشن`);
           lines.push(`⏳ الكولداون: 30 دقيقة قبل ما تقدر تمنشن تاني.`);
-          try { await message.author.send(lines.join("\n")); } catch {}
+          await sendWarningEmbed(channel, userId, "تم خصم منشن", lines.join("\n"), message.guild);
         }
       }
       // الأدمن: مفيش خصم ولا إشعار
