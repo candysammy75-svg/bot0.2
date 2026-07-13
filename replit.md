@@ -30,6 +30,10 @@ PORT=8080 pnpm --filter @workspace/api-server run dev
 
 This builds the TypeScript with esbuild, then starts the server + Discord bot.
 
+After a fresh import, run `pnpm install` and push the DB schema (`cd lib/db && pnpm run push`) before starting the workflow — the bot exits fatally on boot if the `rooms` table doesn't exist yet.
+
+Note: this project ships `artifacts/api-server/.replit-artifact/artifact.toml` and `artifacts/mockup-sandbox/.replit-artifact/artifact.toml` from before it was exported to GitHub, but `listArtifacts()` returns empty after a fresh import — artifact registration isn't carried over by git. The "Dragon Bot" workflow was configured directly via `configureWorkflow` (not the managed artifact-workflow path) as a working stand-in.
+
 ## Required secrets
 
 | Secret | Description |
