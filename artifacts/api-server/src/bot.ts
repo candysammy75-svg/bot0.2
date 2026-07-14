@@ -572,21 +572,22 @@ const activeAutoLines          = new Map<string, ActiveAutoLines>();
 // ══════════════════════════════════════════════════════════════════════════════
 
 interface PendingAucMentionPurchase {
-  userId:      string;
-  username:    string;
-  mentionType: AuctionType;
-  netPrice:    number;
-  transferAmt: number;
-  guildId:     string;
-  expiresAt:   number;
-  timeoutId:   ReturnType<typeof setTimeout>;
+  userId:          string;
+  username:        string;
+  mentionType:     AuctionType;
+  netPrice:        number;
+  transferAmt:     number;
+  guildId:         string;
+  ticketChannelId: string;
+  expiresAt:       number;
+  timeoutId:       ReturnType<typeof setTimeout>;
 }
 
 const pendingAucMentionPurchases = new Map<string, PendingAucMentionPurchase>();
 
 // بعد تأكيد ProBot — ينتظر المستخدم يضغط زر "اختار تفاصيل المزاد"
 // NOTE: single-use token — بيتمسح بعد ما المودال يتسبمت أو بعد 10 دقايق
-const pendingAucMentionReady = new Map<string, { mentionType: AuctionType; guildId: string; timeoutId: ReturnType<typeof setTimeout> }>();
+const pendingAucMentionReady = new Map<string, { mentionType: AuctionType; guildId: string; ticketChannelId: string; timeoutId: ReturnType<typeof setTimeout> }>();
 
 /**
  * يبدأ النشر التلقائي في روم العميل كل 6 ساعات طول المدة المدفوعة.
@@ -3130,9 +3131,10 @@ client.on(Events.MessageCreate, async (message: Message) => {
               logger.info({ userId: matchedAucMention!.userId }, "Auc mention ready token expired");
             }, 10 * 60 * 1000);
             pendingAucMentionReady.set(matchedAucMention.userId, {
-              mentionType: matchedAucMention.mentionType,
-              guildId:     matchedAucMention.guildId,
-              timeoutId:   readyTimeoutId,
+              mentionType:     matchedAucMention.mentionType,
+              guildId:         matchedAucMention.guildId,
+              ticketChannelId: matchedAucMention.ticketChannelId,
+              timeoutId:       readyTimeoutId,
             });
 
             const amTypeCfg  = AUCTION_TYPES[matchedAucMention.mentionType];
@@ -3162,12 +3164,12 @@ client.on(Events.MessageCreate, async (message: Message) => {
               .setLabel(`${amTypeCfg.emoji} اختار تفاصيل الإعلان`)
               .setStyle(ButtonStyle.Primary);
 
-            // ابعت في روم الأوامر
+            // ابعت جوّه تذكرة الطلب نفسها (مش في روم الأوامر)
             try {
-              const cmdCh3 = message.guild
-                ? message.guild.channels.cache.get(REACTIVATION_CHANNEL_ID) as TextChannel | undefined
+              const ticketCh3 = message.guild
+                ? (message.guild.channels.cache.get(matchedAucMention.ticketChannelId) as TextChannel | undefined)
                 : undefined;
-              await cmdCh3?.send({
+              await ticketCh3?.send({
                 content:    `<@${matchedAucMention.userId}>`,
                 embeds:     [amConfEmbed],
                 files:      amFilesConf,
@@ -5101,6 +5103,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
 
   // ── زرار شراء منشن إعلان مزاد (buy_auc_mention_*) ──────────────────────
   // customId: buy_auc_mention_{everyone|here|offers}
+  // NOTE: بيفتح تذكرة خاصة زي باقي المشتريات — الدفع بيتم جوّه التذكرة
+  //       مش من خلال رسالة عامة في روم الأوامر.
   if (interaction.isButton() && interaction.customId.startsWith("buy_auc_mention_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const mType    = interaction.customId.replace("buy_auc_mention_", "") as AuctionType;
@@ -5121,7 +5125,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (existingAM) {
       const remainSec = Math.max(0, Math.ceil((existingAM.expiresAt - Date.now()) / 1000));
       await interaction.editReply({
-        content: `❌ **عندك طلب منشن مزاد معلّق!** الوقت المتبقي: **${Math.floor(remainSec / 60)}:${String(remainSec % 60).padStart(2, "0")}** دقيقة\n\nلو دفعت خلص، البوت هيأكدها تلقائياً. ⏳`,
+        content: `❌ **عندك طلب منشن مزاد معلّق!** الوقت المتبقي: **${Math.floor(remainSec / 60)}:${String(remainSec % 60).padStart(2, "0")}** دقيقة\n\nتفتكرها في التذكرة <#${existingAM.ticketChannelId}>.`,
       });
       return;
     }
@@ -5129,23 +5133,37 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     const netPrice    = typeCfg.price;
     const transferAmt = calcTransferAmount(netPrice);
     const cmd         = `C <@${OWNER_ID}> ${transferAmt}`;
-    const expiresAt   = Date.now() + 5 * 60 * 1000; // 5 دقايق
 
+    // أنشئ تذكرة خاصة بالمنشن
+    const ticketChannel = await guild.channels.create({
+      name:   `auc-ad-${username}-${mType}`,
+      type:   ChannelType.GuildText,
+      parent: TICKETS_CATEGORY_ID,
+      permissionOverwrites: [
+        { id: guild.id,             deny:  [PermissionFlagsBits.ViewChannel] },
+        { id: userId,               allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] },
+        { id: guild.roles.everyone, deny:  [PermissionFlagsBits.ViewChannel] },
+      ],
+    });
+
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 دقايق
     const timeoutId = setTimeout(() => {
       pendingAucMentionPurchases.delete(userId);
+      ticketChannel.delete("Auc mention ticket timed out").catch(() => {});
       logger.info({ userId, mType }, "Auction mention purchase timed out");
     }, 5 * 60 * 1000);
 
     pendingAucMentionPurchases.set(userId, {
       userId, username, mentionType: mType,
       netPrice, transferAmt,
-      guildId:  guild.id,
+      guildId:         guild.id,
+      ticketChannelId: ticketChannel.id,
       expiresAt, timeoutId,
     });
 
-    logger.info({ userId, mType, transferAmt }, "Pending auc mention purchase created — 5min window");
+    logger.info({ userId, mType, transferAmt }, "Pending auc mention purchase created — ticket opened");
 
-    // ابعت embed في روم الأوامر مع زر "أمر التحويل"
+    // ابعت أمر التحويل جوّه التذكرة على طول (خاصة، مفيش داعي لزر إظهار)
     const DIV_AM2    = "ـﮩ════════════════ﮩـ";
     const gIAM2      = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
     const amCmdEmbed = new EmbedBuilder()
@@ -5157,6 +5175,11 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         {
           name:  `${STAR_EMOJI} المنشن`,
           value: `> ${MONEY_EMOJI} **${typeCfg.label}**\n> ${DIV_AM2}`,
+          inline: false,
+        },
+        {
+          name:  `${STAR_EMOJI} أمر التحويل — انسخه وابعثه في ProBot`,
+          value: `> \`\`\`${cmd}\`\`\`\n> ${DIV_AM2}`,
           inline: false,
         },
         {
@@ -5178,26 +5201,40 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       amCmdEmbed.setImage("attachment://dragon_text_banner.webp");
     }
 
-    const showCmdBtn = new ButtonBuilder()
-      .setCustomId(`auc_mention_cmd_${userId}_${mType}`)
-      .setLabel("📋 عرض أمر التحويل")
-      .setStyle(ButtonStyle.Primary);
+    const closeAmBtn = new ButtonBuilder()
+      .setCustomId(`close_aucmention_ticket_${userId}`)
+      .setLabel("🔒 إلغاء الطلب")
+      .setStyle(ButtonStyle.Danger);
 
-    try {
-      const cmdCh = await guild.channels.fetch(REACTIVATION_CHANNEL_ID).catch(() => null) as TextChannel | null;
-      if (cmdCh) {
-        await cmdCh.send({
-          content:    `<@${userId}>`,
-          embeds:     [amCmdEmbed],
-          files:      amCmdFiles,
-          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(showCmdBtn)],
-        });
-      }
-    } catch (err) {
-      logger.error({ err }, "Failed to send auc mention purchase message in REACTIVATION_CHANNEL_ID");
+    await ticketChannel.send({
+      content:    `<@${userId}>`,
+      embeds:     [amCmdEmbed],
+      files:      amCmdFiles,
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(closeAmBtn)],
+    });
+
+    await interaction.editReply({ content: `✅ تم إنشاء تذكرة الطلب! <#${ticketChannel.id}>` });
+    return;
+  }
+
+  // ── زرار إلغاء طلب منشن إعلان مزاد قبل الدفع (close_aucmention_ticket_*) ──
+  if (interaction.isButton() && interaction.customId.startsWith("close_aucmention_ticket_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const ownerIdAm = interaction.customId.replace("close_aucmention_ticket_", "");
+
+    if (interaction.user.id !== ownerIdAm) {
+      await interaction.editReply({ content: "❌ الزرار ده مش بتاعك." });
+      return;
     }
 
-    await interaction.editReply({ content: `✅ اتبعت لك رسالة في <#${REACTIVATION_CHANNEL_ID}> — اضغط زر "عرض أمر التحويل" وحول المبلغ!` });
+    const pendingAm = pendingAucMentionPurchases.get(ownerIdAm);
+    if (pendingAm) {
+      clearTimeout(pendingAm.timeoutId);
+      pendingAucMentionPurchases.delete(ownerIdAm);
+    }
+
+    await interaction.editReply({ content: "🔒 تم إلغاء الطلب — التذكرة هتقفل دلوقتي." });
+    setTimeout(() => (interaction.channel as TextChannel)?.delete("Auc mention ticket cancelled").catch(() => {}), 3000);
     return;
   }
 
@@ -5394,6 +5431,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
+    // ticketChannelId المخزّن في الـ ready token هو تذكرة الطلب نفسها
+    const ticketChannelId4 = readyToken4.ticketChannelId;
+
     // سجّل في DB
     const [aucRecord] = await db
       .insert(auctionSchedulesTable)
@@ -5405,7 +5445,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
         scheduledHour:   targetHour4,
         status:          "scheduled", // مدفوع بالفعل — جاهز
         roomChannelId:   roomChannelId4,
-        ticketChannelId: REACTIVATION_CHANNEL_ID,
+        ticketChannelId: ticketChannelId4,
         totalPrice:      String(calcTransferAmount(typeCfg4.price)),
         sellingPrice:    sellingPrice,
       })
@@ -5416,7 +5456,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (usedToken) clearTimeout(usedToken.timeoutId);
     pendingAucMentionReady.delete(ownerId4);
 
-    // بعت تأكيد في روم الأوامر
+    // بعت تأكيد جوّه تذكرة الطلب وبعدين اقفلها
     const DIV_CONF = "ـﮩ════════════════ﮩـ";
     const gICONF   = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
     const confEmbed = new EmbedBuilder()
@@ -5455,8 +5495,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
 
     try {
-      const cmdCh2 = await interaction.guild?.channels.fetch(REACTIVATION_CHANNEL_ID).catch(() => null) as TextChannel | null;
-      await cmdCh2?.send({ content: `<@${ownerId4}>`, embeds: [confEmbed], files: confFiles }).catch(() => {});
+      const ticketCh4 = interaction.guild?.channels.cache.get(ticketChannelId4) as TextChannel | undefined;
+      await ticketCh4?.send({ content: `<@${ownerId4}>`, embeds: [confEmbed], files: confFiles }).catch(() => {});
+      // اقفل التذكرة بعد التأكيد — الطلب خلص
+      setTimeout(() => ticketCh4?.delete("Auc mention ticket closed after confirmation").catch(() => {}), 5000);
     } catch { /* ignore */ }
 
     await interaction.editReply({
