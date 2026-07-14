@@ -166,32 +166,43 @@ export type Warning = typeof warningsTable.$inferSelect;
 // ══════════════════════════════════════════════════════════════════════════════
 //  auction_schedules — حجوزات المزاد
 //  NOTE: كل حجز بيمر بالحالات:
-//    pending_payment → scheduled → active → completed | cancelled
+//    pending_payment → awaiting_item → awaiting_payment_method → scheduled
+//                                                                → active → completed
+//                                                                → cancelled
 //
-//  scheduledDate: تاريخ المزاد بتوقيت القاهرة (YYYY-MM-DD)
-//  scheduledHour: ساعة بدء المزاد بتوقيت القاهرة (0–23)
-//  roomChannelId: ID شانل المزاد في Discord (من الـ 3 رومات الثابتة)
-//  winnerUserId / winningBid: يُعبَّآن بعد انتهاء المزاد
+//  scheduledDate/scheduledHour/roomChannelId: بتفضل null لحد ما البوت يحدد
+//    ميعاد تلقائي بعد ما اليوزر يجاوب على سؤالي "المزاد على ايه" و"الدفع ازاي".
+//  delayMinutes: تأجيل تراكمي (بالدقايق) لو الروم لسه مشغول بمزاد سابق وقت الميعاد.
+//  reminded: true بعد ما البوت يبعت تذكير قبل نص ساعة (يمنع تكرار التذكير).
+//  itemDescription: إجابة السؤال الإجباري "المزاد على ايه؟".
+//  paymentMethod: إجابة السؤال الاختياري "الدفع ازاي؟" (ممكن تكون null لو تخطى).
+//  roomChannelId: ID شانل المزاد في Discord (من الـ 3 رومات الثابتة).
+//  winnerUserId: بيتعبى لما الأدمن يكتب "مبروك @الفايز" — مفيش winningBid
+//    لأن المزايدة بقت يدوية بالكامل تحت إدارة الأدمن، والبوت مالوش دعوة بالأرقام.
 // ══════════════════════════════════════════════════════════════════════════════
 export const auctionSchedulesTable = pgTable("auction_schedules", {
-  id:              serial("id").primaryKey(),
-  discordUserId:   text("discord_user_id").notNull(),
-  discordUsername: text("discord_username").notNull(),
-  auctionType:     text("auction_type").notNull(),       // 'everyone' | 'here' | 'offers'
-  scheduledDate:   text("scheduled_date").notNull(),     // YYYY-MM-DD توقيت القاهرة
-  scheduledHour:   integer("scheduled_hour").notNull(),  // 0–23 توقيت القاهرة
-  status:          text("status").notNull().default("pending_payment"),
-  roomChannelId:   text("room_channel_id"),
-  ticketChannelId: text("ticket_channel_id"),
-  totalPrice:      text("total_price"),
-  winnerUserId:    text("winner_user_id"),
-  winningBid:      integer("winning_bid"),
+  id:               serial("id").primaryKey(),
+  discordUserId:    text("discord_user_id").notNull(),
+  discordUsername:  text("discord_username").notNull(),
+  auctionType:      text("auction_type").notNull(),       // 'everyone' | 'here' | 'offers'
+  scheduledDate:    text("scheduled_date"),                // YYYY-MM-DD توقيت القاهرة — null لحد ما يتحدد
+  scheduledHour:    integer("scheduled_hour"),              // 0–23 توقيت القاهرة — null لحد ما يتحدد
+  delayMinutes:     integer("delay_minutes").notNull().default(0),
+  reminded:         boolean("reminded").notNull().default(false),
+  status:           text("status").notNull().default("pending_payment"),
+  roomChannelId:    text("room_channel_id"),
+  ticketChannelId:  text("ticket_channel_id"),
+  totalPrice:       text("total_price"),
+  itemDescription:  text("item_description"),
+  paymentMethod:    text("payment_method"),
+  winnerUserId:     text("winner_user_id"),
+  winningBid:       integer("winning_bid"),
   /**
    * لو مش null → المزاد ده "إعلان بيع" (mention-only) مش مزاد مزايدة.
    * بيتخزن السعر اللي صاحب المزاد حاطه.
    */
-  sellingPrice:    text("selling_price"),
-  createdAt:       timestamp("created_at").defaultNow(),
+  sellingPrice:     text("selling_price"),
+  createdAt:        timestamp("created_at").defaultNow(),
 });
 export type AuctionSchedule = typeof auctionSchedulesTable.$inferSelect;
 

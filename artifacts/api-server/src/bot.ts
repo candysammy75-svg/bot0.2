@@ -64,7 +64,7 @@ import {
   userPointsTable,
   productRequestsTable,
 } from "@workspace/db";
-import { eq, and, ne, lt, isNull, sql } from "drizzle-orm";
+import { eq, and, ne, lt, isNull, sql, inArray } from "drizzle-orm";
 import { logger } from "./lib/logger";
 import path from "path";
 import fs from "fs";
@@ -1457,8 +1457,17 @@ const SHOP_NEWS_CHANNEL_ID = "1525277759008407762";
 const AUCTION_ROOM_CHANNEL_IDS: readonly string[] = [
   "1523801341292712051",
   "1523801346195853396",
-  "1523801354139598969",
+  "1526567411199905802",
 ];
+
+/** رتبة "مسؤول المزاد" — الأدمن اللي بيدير المزايدة يدوياً وبيتمنشن عند بداية كل مزاد */
+const AUCTION_MANAGER_ROLE_ID = "1526566223498838096";
+
+/** ساعة إقفال المزادات القسري لو الأدمن ما اعلنش فايز (نهاية يوم الحجز) */
+const AUCTION_DAY_END_HOUR = 23;
+
+/** أقصى عدد أيام نبحث فيها عن ميعاد فاضي عند التحديد التلقائي */
+const AUCTION_SLOT_SEARCH_DAYS = 7;
 
 /** ID كاتيجوري المزادات والطلبيات */
 const AUCTION_CATEGORY_ID = "1523801337933074688";
@@ -1492,25 +1501,140 @@ const ADD_PARTNER_PRICE        = 4_000_000;        // سعر إضافة شريك
 const REMOVE_PARTNER_PRICE     = 6_000_000;        // سعر إزالة شريك
 let   mentionActiveRoleId: string | null = null;
 
-/** حالة المزادات الجارية (في الذاكرة — تُصفَّر عند restart البوت) */
+/**
+ * حالة المزادات الجارية حالياً (في الذاكرة — تُصفَّر عند restart البوت).
+ * NOTE: المزايدة بقت يدوية بالكامل تحت إدارة الأدمن — البوت بس بيعرف إن الروم
+ *       مشغول (عشان يمنع تشغيل مزاد جديد فيه ويأجّل المواعيد التالية عليه).
+ */
 const activeAuctions = new Map<string, {
-  scheduleId:        number;
-  auctionType:       AuctionType;
-  highestBid:        number;
-  highestBidderId:   string | null;
-  highestBidderName: string | null;
-  inactivityTimer:   ReturnType<typeof setTimeout>;
+  scheduleId:  number;
+  auctionType: AuctionType;
+  startedAt:   number;
 }>();
 
-/** بيرجع التاريخ والساعة الحالية بتوقيت القاهرة */
-function getCairoTime(): { date: string; hour: number } {
-  const now = new Date();
+/** تذكرة مزاد بانتظار الإقفال التلقائي بعد تحديد/تغيير الميعاد (scheduleId → timeout) */
+const pendingAuctionTicketAutoClose = new Map<number, ReturnType<typeof setTimeout>>();
+
+/** بيرجع التاريخ والساعة والدقيقة الحالية بتوقيت القاهرة */
+function getCairoTime(): { date: string; hour: number; minute: number } {
+  const now  = new Date();
   const date = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-  const h    = parseInt(
-    now.toLocaleString("en-US", { timeZone: "Africa/Cairo", hour: "numeric", hour12: false }),
-    10,
-  );
-  return { date, hour: h === 24 ? 0 : h };
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Africa/Cairo",
+    hour:     "numeric",
+    minute:   "numeric",
+    hour12:   false,
+  }).formatToParts(now);
+  const hourStr   = parts.find((p) => p.type === "hour")?.value   ?? "0";
+  const minuteStr = parts.find((p) => p.type === "minute")?.value ?? "0";
+  let h = parseInt(hourStr, 10);
+  if (h === 24) h = 0;
+  const m = parseInt(minuteStr, 10);
+  return { date, hour: h, minute: m };
+}
+
+/** بيرجع تاريخ (YYYY-MM-DD) بعد إضافة عدد أيام لتاريخ معين */
+function addDaysToDateStr(dateStr: string, days: number): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * بيدوّر على أقرب ميعاد فاضي (يوم + ساعة + روم) بدايةً من اليوم الحالي.
+ * بيفحص لحد AUCTION_SLOT_SEARCH_DAYS يوم قدام، وبيختار عشوائي من بين كل
+ * الميعاد المتاحة في أول يوم فيه فراغ (ده اللي يحقق "البوت يختار بمزاجه").
+ */
+async function findNextAvailableAuctionSlot(): Promise<{ date: string; hour: number; roomChannelId: string } | null> {
+  const { date: today, hour: currentHour } = getCairoTime();
+
+  for (let dayOffset = 0; dayOffset < AUCTION_SLOT_SEARCH_DAYS; dayOffset++) {
+    const targetDate = dayOffset === 0 ? today : addDaysToDateStr(today, dayOffset);
+
+    const booked = await db
+      .select({ scheduledHour: auctionSchedulesTable.scheduledHour, roomChannelId: auctionSchedulesTable.roomChannelId })
+      .from(auctionSchedulesTable)
+      .where(
+        and(
+          eq(auctionSchedulesTable.scheduledDate, targetDate),
+          inArray(auctionSchedulesTable.status, ["scheduled", "active", "completed"]),
+        ),
+      );
+
+    const usedRoomsByHour = new Map<number, Set<string>>();
+    for (const b of booked) {
+      if (b.scheduledHour == null || !b.roomChannelId) continue;
+      if (!usedRoomsByHour.has(b.scheduledHour)) usedRoomsByHour.set(b.scheduledHour, new Set());
+      usedRoomsByHour.get(b.scheduledHour)!.add(b.roomChannelId);
+    }
+
+    const candidateHours = Array.from({ length: 13 }, (_, i) => i + 10) // 10 → 22
+      .filter((h) => dayOffset > 0 || h > currentHour);
+
+    const candidates: { hour: number; roomChannelId: string }[] = [];
+    for (const h of candidateHours) {
+      const usedRooms = usedRoomsByHour.get(h) ?? new Set<string>();
+      const freeRoom   = AUCTION_ROOM_CHANNEL_IDS.find((r) => !usedRooms.has(r));
+      if (freeRoom) candidates.push({ hour: h, roomChannelId: freeRoom });
+    }
+
+    if (candidates.length > 0) {
+      const pick = candidates[Math.floor(Math.random() * candidates.length)];
+      return { date: targetDate, hour: pick.hour, roomChannelId: pick.roomChannelId };
+    }
+  }
+  return null;
+}
+
+/** بيجدول (أو يعيد جدولة) إقفال تذكرة مزاد تلقائياً بعد ما الميعاد يتحدد/يتغيّر */
+function scheduleAuctionTicketAutoClose(scheduleId: number, ticketCh: TextChannel | null | undefined, delayMs: number): void {
+  const existing = pendingAuctionTicketAutoClose.get(scheduleId);
+  if (existing) clearTimeout(existing);
+  const timeoutId = setTimeout(() => {
+    pendingAuctionTicketAutoClose.delete(scheduleId);
+    if (ticketCh) ticketCh.delete("Auction ticket auto-closed after scheduling").catch(() => {});
+  }, delayMs);
+  pendingAuctionTicketAutoClose.set(scheduleId, timeoutId);
+}
+
+/** بيلغي أي إقفال تلقائي مجدول لتذكرة مزاد (مثلاً وقت ما اليوزر يضغط "تغيير الميعاد") */
+function cancelAuctionTicketAutoClose(scheduleId: number): void {
+  const existing = pendingAuctionTicketAutoClose.get(scheduleId);
+  if (existing) {
+    clearTimeout(existing);
+    pendingAuctionTicketAutoClose.delete(scheduleId);
+  }
+}
+
+/** بيبعت تذكير لصاحب المزاد قبل الميعاد بنص ساعة — DM، ولو مقفول يمنشنه في شانل الأوامر */
+async function sendAuctionReminder(
+  guild: Guild,
+  sched: { discordUserId: string; auctionType: string; scheduledHour: number | null; roomChannelId: string | null; itemDescription: string | null },
+): Promise<void> {
+  const typeCfg = AUCTION_TYPES[sched.auctionType as AuctionType];
+  const text =
+    `⏰ **تذكير: مزادك بعد نص ساعة!**\n\n` +
+    `${typeCfg?.emoji ?? ""} **${typeCfg?.label ?? sched.auctionType}**\n` +
+    (sched.scheduledHour != null ? `⏰ الموعد: **${hourToLabel(sched.scheduledHour)}**\n` : "") +
+    (sched.roomChannelId ? `📍 الروم: <#${sched.roomChannelId}>\n` : "") +
+    (sched.itemDescription ? `📦 المزاد على: ${sched.itemDescription}\n` : "") +
+    `\nاستعد! 🎉`;
+
+  let dmSent = false;
+  try {
+    const user = await guild.client.users.fetch(sched.discordUserId);
+    await user.send({ content: text });
+    dmSent = true;
+  } catch {
+    dmSent = false;
+  }
+
+  if (!dmSent) {
+    try {
+      const fallbackCh = await guild.channels.fetch(REACTIVATION_CHANNEL_ID).catch(() => null) as TextChannel | null;
+      await fallbackCh?.send({ content: `<@${sched.discordUserId}>\n${text}` });
+    } catch { /* ignore */ }
+  }
 }
 
 /** ساعة (0–23) → نص قصير مقروء مثل "12ص" / "3م" */
@@ -1538,84 +1662,9 @@ async function unlockAuctionRoom(guild: Guild, channelId: string): Promise<void>
     .catch(() => {});
 }
 
-/**
- * إنهاء المزاد بعد دقيقتين صمت.
- * 1. يعلن الفائز (أو غياب العروض).
- * 2. يقفل الروم.
- * 3. بعد 30 دقيقة: يمسح الشات.
- */
-async function endAuction(guild: Guild, channelId: string): Promise<void> {
-  const auction = activeAuctions.get(channelId);
-  if (!auction) return;
-  clearTimeout(auction.inactivityTimer);
-  activeAuctions.delete(channelId);
-
-  const ch = guild.channels.cache.get(channelId) as TextChannel | undefined;
-  if (!ch) return;
-
-  const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
-  const DIV_END      = "ـﮩ════════════════ﮩـ";
-  const aType        = auction.auctionType as AuctionType;
-  const typeCfg      = AUCTION_TYPES[aType];
-
-  const endEmbed = new EmbedBuilder()
-    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
-
-  const endFiles: AttachmentBuilder[] = [];
-  if (fs.existsSync(DRAGON_BANNER_PATH)) {
-    endFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
-    endEmbed.setImage("attachment://dragon_banner.webp");
-  }
-
-  if (auction.highestBidderId) {
-    endEmbed
-      .setTitle("🎉 انتهى المزاد!")
-      .setColor(0x00ff88)
-      .addFields(
-        {
-          name:  `${STAR_EMOJI} الفائز`,
-          value: `> 👑 <@${auction.highestBidderId}>\n> ${DIV_END}`,
-          inline: false,
-        },
-        {
-          name:  `${STAR_EMOJI} المبلغ الفائز`,
-          value: `> 💰 **${auction.highestBid.toLocaleString()}** كريدت\n> ${DIV_END}`,
-          inline: false,
-        },
-        {
-          name:  `${STAR_EMOJI} النوع`,
-          value: `> ${typeCfg?.emoji ?? ""} **${typeCfg?.label ?? aType}**\n> ${DIV_END}`,
-          inline: false,
-        },
-        {
-          name:  `${STAR_EMOJI} الخطوة التالية`,
-          value: `> ⏳ سيتواصل معك الأدمن لإتمام الدفع وتنفيذ المزاد\n> ${DIV_END}`,
-          inline: false,
-        },
-      );
-  } else {
-    endEmbed
-      .setTitle("📭 انتهى المزاد بدون عروض")
-      .setColor(0x888888)
-      .addFields({
-        name:  `${STAR_EMOJI} الحالة`,
-        value: `> لم يتقدم أحد بعرض في هذا المزاد\n> ${DIV_END}`,
-        inline: false,
-      });
-  }
-
-  await ch.send({ embeds: [endEmbed], files: endFiles }).catch(() => {});
-
-  await db.update(auctionSchedulesTable).set({
-    status:       "completed",
-    winnerUserId: auction.highestBidderId ?? undefined,
-    winningBid:   auction.highestBid > 0 ? auction.highestBid : undefined,
-  }).where(eq(auctionSchedulesTable.id, auction.scheduleId)).catch(() => {});
-
-  await lockAuctionRoom(guild, channelId);
-
-  // بعد 30 دقيقة: امسح الشات لإعادة الاستعداد
+/** بيقفل الروم ويمسح الشات بعده بـ10 دقايق — مشترك بين الإنهاء الطبيعي والقسري */
+async function lockAndScheduleAuctionCleanup(guild: Guild, ch: TextChannel): Promise<void> {
+  await lockAuctionRoom(guild, ch.id);
   setTimeout(async () => {
     try {
       let msgs = await ch.messages.fetch({ limit: 100 });
@@ -1624,11 +1673,80 @@ async function endAuction(guild: Guild, channelId: string): Promise<void> {
         if (msgs.size < 100) break;
         msgs = await ch.messages.fetch({ limit: 100 });
       }
-      logger.info({ channelId }, "Auction channel cleared after 30 min");
+      logger.info({ channelId: ch.id }, "Auction channel cleared after 10 min");
     } catch (err) {
-      logger.error({ err, channelId }, "Failed to clear auction channel");
+      logger.error({ err, channelId: ch.id }, "Failed to clear auction channel");
     }
-  }, 30 * 60 * 1000);
+  }, 10 * 60 * 1000);
+}
+
+/**
+ * إنهاء المزاد لما الأدمن يكتب "مبروك @الفايز" في روم المزاد.
+ * 1. يعلن الفائز.
+ * 2. يقفل الروم.
+ * 3. بعد 10 دقايق: يمسح الشات ويستعد للمزاد اللي بعده.
+ */
+async function endAuctionManual(guild: Guild, channelId: string, winnerUserId: string): Promise<void> {
+  const auction = activeAuctions.get(channelId);
+  if (!auction) return;
+  activeAuctions.delete(channelId);
+
+  const ch = guild.channels.cache.get(channelId) as TextChannel | undefined;
+  if (!ch) return;
+
+  const guildIconURL = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
+  const DIV_END       = "ـﮩ════════════════ﮩـ";
+
+  const endEmbed = new EmbedBuilder()
+    .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
+    .setTitle("🎉 انتهى المزاد!")
+    .setColor(0x00ff88)
+    .addFields({
+      name:  `${STAR_EMOJI} الفائز`,
+      value: `> 👑 <@${winnerUserId}>\n> ${DIV_END}`,
+      inline: false,
+    })
+    .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: guildIconURL });
+
+  const endFiles: AttachmentBuilder[] = [];
+  if (fs.existsSync(DRAGON_BANNER_PATH)) {
+    endFiles.push(new AttachmentBuilder(DRAGON_BANNER_PATH, { name: "dragon_banner.webp" }));
+    endEmbed.setImage("attachment://dragon_banner.webp");
+  }
+
+  await ch.send({ embeds: [endEmbed], files: endFiles }).catch(() => {});
+
+  await db.update(auctionSchedulesTable).set({
+    status:       "completed",
+    winnerUserId,
+  }).where(eq(auctionSchedulesTable.id, auction.scheduleId)).catch(() => {});
+
+  await lockAndScheduleAuctionCleanup(guild, ch);
+  logger.info({ channelId, winnerUserId, scheduleId: auction.scheduleId }, "Auction ended manually by admin");
+}
+
+/**
+ * إقفال قسري لمزاد لسه شغال بعد ما مواعيد اليوم خلصت (AUCTION_DAY_END_HOUR)
+ * من غير ما الأدمن يعلن فايز. مفيش تحديد فايز هنا — الأدمن هيحدده بنفسه بره البوت.
+ */
+async function forceCloseAuctionTimeUp(guild: Guild, channelId: string): Promise<void> {
+  const auction = activeAuctions.get(channelId);
+  if (!auction) return;
+  activeAuctions.delete(channelId);
+
+  const ch = guild.channels.cache.get(channelId) as TextChannel | undefined;
+  if (!ch) return;
+
+  await ch.send({
+    content: "⏰ **انتهى وقت المزاد لهذا اليوم!** الأدمن سيحدد الفائز مباشرة.",
+  }).catch(() => {});
+
+  await db.update(auctionSchedulesTable).set({
+    status: "completed",
+  }).where(eq(auctionSchedulesTable.id, auction.scheduleId)).catch(() => {});
+
+  await lockAndScheduleAuctionCleanup(guild, ch);
+  logger.info({ channelId, scheduleId: auction.scheduleId }, "Auction force-closed — day ended without admin declaring a winner");
 }
 
 /**
@@ -1640,7 +1758,10 @@ async function endAuction(guild: Guild, channelId: string): Promise<void> {
  */
 async function startAuction(
   guild: Guild,
-  schedule: { id: number; auctionType: string; discordUserId: string; roomChannelId: string; sellingPrice?: string | null },
+  schedule: {
+    id: number; auctionType: string; discordUserId: string; roomChannelId: string;
+    sellingPrice?: string | null; itemDescription?: string | null; paymentMethod?: string | null;
+  },
 ): Promise<void> {
   const channelId = schedule.roomChannelId;
   const aType     = schedule.auctionType as AuctionType;
@@ -1725,7 +1846,7 @@ async function startAuction(
     return;
   }
 
-  // ── مزاد مزايدة (bidding) ────────────────────────────────────────────────
+  // ── مزاد بإدارة الأدمن يدوياً (بدون مزايدة تلقائية بالأرقام) ─────────────
   const guildIconURL2 = guild.iconURL({ extension: "png", size: 256 }) ?? undefined;
   const DIV_BID = "ـﮩ════════════════ﮩـ";
   const bidEmbed = new EmbedBuilder()
@@ -1743,9 +1864,19 @@ async function startAuction(
         value: `> 👤 <@${schedule.discordUserId}>\n> ${DIV_BID}`,
         inline: false,
       },
+      ...(schedule.itemDescription ? [{
+        name:  `${STAR_EMOJI} المزاد على`,
+        value: `> 📦 ${schedule.itemDescription}\n> ${DIV_BID}`,
+        inline: false,
+      }] : []),
+      ...(schedule.paymentMethod ? [{
+        name:  `${STAR_EMOJI} طريقة الدفع`,
+        value: `> 💳 ${schedule.paymentMethod}\n> ${DIV_BID}`,
+        inline: false,
+      }] : []),
       {
-        name:  `${STAR_EMOJI} قواعد المزاد`,
-        value: `> 💬 اكتب سعرك (أرقام فقط)\n> 👑 من يكتب أعلى سعر يفوز!\n> ⏱️ المزاد ينتهي بعد **دقيقتين** من آخر عرض\n> ${DIV_BID}`,
+        name:  `${STAR_EMOJI} إدارة المزاد`,
+        value: `> 🎙️ الأدمن هو المسؤول عن إدارة المزايدة بالكامل\n> ✅ عند تحديد الفايز الأدمن هيكتب "مبروك @الفايز"\n> ${DIV_BID}`,
         inline: false,
       },
     )
@@ -1757,50 +1888,86 @@ async function startAuction(
     bidEmbed.setImage("attachment://dragon_banner.webp");
   }
 
-  await ch.send({ content: mentionText, embeds: [bidEmbed], files: bidFiles });
-
-  const inactivityTimer = setTimeout(
-    () => endAuction(guild, channelId).catch((e) => logger.error({ e }, "endAuction error")),
-    2 * 60 * 1000,
-  );
-
-  activeAuctions.set(channelId, {
-    scheduleId:        schedule.id,
-    auctionType:       aType,
-    highestBid:        0,
-    highestBidderId:   null,
-    highestBidderName: null,
-    inactivityTimer,
+  await ch.send({
+    content: `${mentionText} <@&${AUCTION_MANAGER_ROLE_ID}> <@${schedule.discordUserId}>`,
+    embeds:  [bidEmbed],
+    files:   bidFiles,
   });
 
-  logger.info({ scheduleId: schedule.id, channelId, aType }, "Auction started (bidding)");
+  activeAuctions.set(channelId, {
+    scheduleId:  schedule.id,
+    auctionType: aType,
+    startedAt:   Date.now(),
+  });
+
+  logger.info({ scheduleId: schedule.id, channelId, aType }, "Auction started (manual — admin-managed)");
 }
 
 /**
- * Scheduler — بيتشغل كل 30 ثانية.
- * لو في مزاد مجدول ووقته جه → يشغّله.
+ * Scheduler — بيتشغل كل 30 ثانية بدقة الدقيقة (لدعم التذكيرات والتأجيل).
+ * - قبل الميعاد بنص ساعة: يبعت تذكير (مرة واحدة).
+ * - لو الميعاد جه والروم مشغول بمزاد سابق: يأجّل 15 دقيقة (تراكمي، بيتكرر لحد ما الروم يفضى).
+ * - لو الميعاد جه والروم فاضي: يشغّل المزاد.
+ * - لو مزاد شغال ودخلنا وقت إقفال اليوم (AUCTION_DAY_END_HOUR) من غير ما الأدمن يعلن فايز: إقفال قسري.
  */
 function startAuctionScheduler(guild: Guild): void {
   setInterval(async () => {
     try {
-      const { date, hour } = getCairoTime();
-      const due = await db.select().from(auctionSchedulesTable).where(
+      const { date, hour, minute } = getCairoTime();
+      const nowMin = hour * 60 + minute;
+
+      const todaySchedules = await db.select().from(auctionSchedulesTable).where(
         and(
-          eq(auctionSchedulesTable.status, "scheduled"),
           eq(auctionSchedulesTable.scheduledDate, date),
-          eq(auctionSchedulesTable.scheduledHour, hour),
+          inArray(auctionSchedulesTable.status, ["scheduled", "active"]),
         ),
       );
-      for (const sched of due) {
-        if (!sched.roomChannelId) continue;
-        if (activeAuctions.has(sched.roomChannelId)) continue;
-        await startAuction(guild, {
-          id:            sched.id,
-          auctionType:   sched.auctionType,
-          discordUserId: sched.discordUserId,
-          roomChannelId: sched.roomChannelId,
-          sellingPrice:  sched.sellingPrice,
-        });
+
+      for (const sched of todaySchedules) {
+        if (!sched.roomChannelId || sched.scheduledHour == null) continue;
+        const effectiveStartMin = sched.scheduledHour * 60 + (sched.delayMinutes ?? 0);
+        const roomBusy = activeAuctions.has(sched.roomChannelId);
+
+        if (sched.status === "scheduled") {
+          const minutesLeft = effectiveStartMin - nowMin;
+
+          if (minutesLeft > 0) {
+            if (!sched.reminded && minutesLeft <= 30) {
+              await sendAuctionReminder(guild, sched).catch((e) => logger.error({ e }, "sendAuctionReminder error"));
+              await db.update(auctionSchedulesTable)
+                .set({ reminded: true })
+                .where(eq(auctionSchedulesTable.id, sched.id))
+                .catch(() => {});
+            }
+            continue;
+          }
+
+          // الميعاد جه أو فات
+          if (roomBusy) {
+            // الروم لسه مشغول بمزاد سابق → أجّل ربع ساعة وكرر الفحص تاني
+            await db.update(auctionSchedulesTable)
+              .set({ delayMinutes: (sched.delayMinutes ?? 0) + 15 })
+              .where(eq(auctionSchedulesTable.id, sched.id))
+              .catch(() => {});
+            logger.info({ scheduleId: sched.id, roomChannelId: sched.roomChannelId }, "Auction delayed 15 min — room busy");
+            continue;
+          }
+
+          await startAuction(guild, {
+            id:               sched.id,
+            auctionType:      sched.auctionType,
+            discordUserId:    sched.discordUserId,
+            roomChannelId:    sched.roomChannelId,
+            sellingPrice:     sched.sellingPrice,
+            itemDescription:  sched.itemDescription,
+            paymentMethod:    sched.paymentMethod,
+          });
+          continue;
+        }
+
+        if (sched.status === "active" && roomBusy && hour >= AUCTION_DAY_END_HOUR) {
+          await forceCloseAuctionTimeUp(guild, sched.roomChannelId).catch((e) => logger.error({ e }, "forceCloseAuctionTimeUp error"));
+        }
       }
     } catch (err) {
       logger.error({ err }, "Auction scheduler error");
@@ -1815,21 +1982,23 @@ function startAuctionScheduler(guild: Guild): void {
 async function buildScheduleEmbed(): Promise<EmbedBuilder> {
   const { date } = getCairoTime();
 
+  // بنعرض بس المواعيد اللي اتحدد لها ساعة فعلية (scheduled/active/completed).
+  // التذاكر اللي لسه بتستنى الدفع أو إجابات الأسئلة (pending_payment/awaiting_*)
+  // مالهاش ساعة محددة بعد، فمالهاش لزمة في جدول المواعيد ده.
   const schedules = await db
     .select()
     .from(auctionSchedulesTable)
     .where(
       and(
         eq(auctionSchedulesTable.scheduledDate, date),
-        ne(auctionSchedulesTable.status, "cancelled"),
+        inArray(auctionSchedulesTable.status, ["scheduled", "active", "completed"]),
       ),
     );
 
   const statusEmoji: Record<string, string> = {
-    pending_payment: "⏳",
-    scheduled:       "✅",
-    active:          "🔴",
-    completed:       "✔️",
+    scheduled: "✅",
+    active:    "🔴",
+    completed: "✔️",
   };
   const typeEmoji: Record<string, string> = {
     everyone: "📢",
@@ -1837,7 +2006,7 @@ async function buildScheduleEmbed(): Promise<EmbedBuilder> {
     offers:   "🔔",
   };
 
-  schedules.sort((a, b) => a.scheduledHour - b.scheduledHour);
+  schedules.sort((a, b) => (a.scheduledHour ?? 0) - (b.scheduledHour ?? 0));
 
   const embed = new EmbedBuilder()
     .setTitle(`📅 المواعيد المحجوزة — ${date} (توقيت القاهرة)`)
@@ -1851,7 +2020,7 @@ async function buildScheduleEmbed(): Promise<EmbedBuilder> {
       const st   = statusEmoji[s.status] ?? "❓";
       const te   = typeEmoji[s.auctionType] ?? "";
       const type = AUCTION_TYPES[s.auctionType as AuctionType]?.label ?? s.auctionType;
-      return `${st} **${hourToLabel(s.scheduledHour)}** — ${te} ${type} — <@${s.discordUserId}>`;
+      return `${st} **${hourToLabel(s.scheduledHour ?? 0)}** — ${te} ${type} — <@${s.discordUserId}>`;
     });
     embed.setDescription(lines.join("\n"));
   }
@@ -1885,6 +2054,57 @@ async function refreshAuctionScheduleMsg(guild: Guild): Promise<void> {
   } catch (err) {
     logger.error({ err }, "refreshAuctionScheduleMsg error");
   }
+}
+
+/**
+ * بعد ما اليوزر يخلص الإجابة على الأسئلة (أو يتخطى السؤال الاختياري):
+ * 1. يدوّر على أقرب ميعاد فاضي ويحدده تلقائياً.
+ * 2. يبعت رسالة بالميعاد + زرار "تغيير الميعاد".
+ * 3. يجدول إقفال التذكرة تلقائياً بعد دقيقة (يتلغي لو اليوزر ضغط تغيير الميعاد).
+ */
+async function finalizeAuctionSlot(
+  guild: Guild,
+  sched: { id: number; ticketChannelId: string | null },
+): Promise<void> {
+  const ticketCh = sched.ticketChannelId
+    ? (guild.channels.cache.get(sched.ticketChannelId) as TextChannel | undefined)
+    : undefined;
+
+  const slot = await findNextAvailableAuctionSlot();
+  if (!slot) {
+    await ticketCh?.send("❌ مفيش مواعيد متاحة حالياً في الأيام الجاية. هيتواصل معاك الأدمن لتحديد ميعادك يدوياً.").catch(() => {});
+    return;
+  }
+
+  await db.update(auctionSchedulesTable)
+    .set({
+      scheduledDate: slot.date,
+      scheduledHour: slot.hour,
+      roomChannelId: slot.roomChannelId,
+      status:        "scheduled",
+      delayMinutes:  0,
+      reminded:      false,
+    })
+    .where(eq(auctionSchedulesTable.id, sched.id));
+
+  const changeBtn = new ButtonBuilder()
+    .setCustomId(`aucchangeslot_${sched.id}`)
+    .setLabel("🔁 تغيير الميعاد")
+    .setStyle(ButtonStyle.Primary);
+
+  await ticketCh?.send({
+    content:
+      `✅ **تم تحديد ميعاد مزادك!**\n\n` +
+      `⏰ الموعد: **${hourToLabel(slot.hour)}** — ${slot.date} (توقيت القاهرة)\n` +
+      `📍 الروم: <#${slot.roomChannelId}>\n\n` +
+      `مش عاجبك الميعاد؟ دوس على الزرار تحت ⬇️`,
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(changeBtn)],
+  }).catch(() => {});
+
+  await refreshAuctionScheduleMsg(guild).catch(() => {});
+
+  // اقفل التذكرة تلقائياً بعد دقيقة، إلا لو اليوزر ضغط "تغيير الميعاد"
+  scheduleAuctionTicketAutoClose(sched.id, ticketCh, 60_000);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2966,23 +3186,18 @@ client.on(Events.MessageCreate, async (message: Message) => {
         const requiredAmt    = Number(auctionTicket.totalPrice);
         const netRequiredAmt = Math.floor(requiredAmt * (1 - PROBOT_FEE));
         if (paid >= netRequiredAmt) {
+          // بعد تأكيد الدفع: منسألش على موعد — بنسأل على تفاصيل المزاد الأول،
+          // وبعدها البوت هيحدد الميعاد تلقائياً (شوف finalizeAuctionSlot).
           await db.update(auctionSchedulesTable)
-            .set({ status: "scheduled" })
+            .set({ status: "awaiting_item" })
             .where(eq(auctionSchedulesTable.id, auctionTicket.id));
 
-          const aType   = auctionTicket.auctionType as AuctionType;
-          const typeCfg = AUCTION_TYPES[aType];
           await channel.send(
-            `✅ **تم تأكيد حجز المزاد!**\n\n` +
-            `<@${auctionTicket.discordUserId}>\n` +
-            `**النوع:** ${typeCfg?.emoji ?? ""} ${typeCfg?.label ?? aType}\n` +
-            `**الموعد:** ${hourToLabel(auctionTicket.scheduledHour)} — ${auctionTicket.scheduledDate} (توقيت القاهرة)\n\n` +
-            `⏰ سيبدأ مزادك تلقائياً في الموعد المحدد. ✅`,
+            `✅ **تم تأكيد الدفع!**\n\n` +
+            `<@${auctionTicket.discordUserId}>\n\n` +
+            `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
+            `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
           );
-          // أغلق التذكرة بعد 5 ثواني
-          setTimeout(() => channel.delete("Auction ticket closed after payment").catch(() => {}), 5000);
-          // حدّث رسالة المواعيد فور تأكيد الحجز
-          if (message.guild) refreshAuctionScheduleMsg(message.guild).catch(() => {});
         } else {
           await channel.send(
             `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmt}). يرجى إعادة التحويل.`,
@@ -3121,10 +3336,11 @@ client.on(Events.MessageCreate, async (message: Message) => {
     return;
   }
 
-  // ── تتبع عروض المزاد في رومات المزاد ────────────────────────────────────
-  // NOTE: رومات المزاد مش في purchasesTable — بنتحقق من activeAuctions مباشرة.
-  //       أي رسالة في الروم وقت المزاد بتعتبر عرض، حتى لو مش رقم.
-  //       لو الروم مقفول (مش في activeAuctions) → تجاهل الرسالة.
+  // ── إدارة المزاد اليدوية في رومات المزاد ─────────────────────────────────
+  // NOTE: المزايدة بقت يدوية بالكامل تحت إدارة الأدمن — البوت ملوش دعوة
+  //       بالأرقام أو العروض. الحاجة الوحيدة اللي البوت بيدور عليها هي رسالة
+  //       الأدمن "مبروك @الفايز" عشان يعلن النتيجة ويقفل ويرتب الروم.
+  //       لو الروم مقفول (مفيش مزاد جاري في activeAuctions) → تجاهل الرسالة.
   if (AUCTION_ROOM_CHANNEL_IDS.includes(channel.id)) {
     // ── فلتر الشتايم داخل رومات المزاد ──────────────────────────────────
     const foundBadWordAuction = findBadWord(content);
@@ -3147,22 +3363,16 @@ client.on(Events.MessageCreate, async (message: Message) => {
     const auction = activeAuctions.get(channel.id);
     if (!auction) return; // الروم مقفول أو مفيش مزاد جاري
 
-    const bidAmount = parseInt(content.replace(/[,٬،_\s]/g, ""), 10);
-    if (!isNaN(bidAmount) && bidAmount > 0 && bidAmount > auction.highestBid) {
-      auction.highestBid        = bidAmount;
-      auction.highestBidderId   = userId;
-      auction.highestBidderName = username;
-
-      // أعد تشغيل عداد الصمت
-      clearTimeout(auction.inactivityTimer);
-      auction.inactivityTimer = setTimeout(
-        () => endAuction(message.guild!, channel.id).catch((e) => logger.error({ e }, "endAuction error")),
-        2 * 60 * 1000,
-      );
-
-      await message.react("✅").catch(() => {});
+    const isAdminMsg = (message.member?.permissions.has(PermissionFlagsBits.Administrator)) ?? false;
+    if (isAdminMsg && /مبروك/.test(content)) {
+      const winner = message.mentions.users.first();
+      if (winner && message.guild) {
+        await endAuctionManual(message.guild, channel.id, winner.id).catch((e) =>
+          logger.error({ e }, "endAuctionManual error"),
+        );
+      }
     }
-    return; // لا تعالج رسائل رومات المزاد بأي منطق آخر
+    return; // البوت ملوش تدخل تاني في رومات المزاد — إدارة المزايدة يدوية بالكامل
   }
 
   // ── روم الطلبيات الثابت — أي حد يبعت فيه، المسموح بس @everyone/@here/طلبيات ──
@@ -3611,6 +3821,74 @@ client.on(Events.MessageCreate, async (message: Message) => {
         return;
       }
     }
+  }
+
+  // ── انتظار وصف المزاد بعد تأكيد الدفع (awaiting_item) ───────────────────
+  // NOTE: السؤال ده إجباري — "المزاد على ايه؟". بعد الإجابة بننتقل لسؤال
+  //       "الدفع ازاي؟" الاختياري (awaiting_payment_method).
+  const pendingAuctionItem = await db
+    .select()
+    .from(auctionSchedulesTable)
+    .where(
+      and(
+        eq(auctionSchedulesTable.discordUserId, userId),
+        eq(auctionSchedulesTable.status, "awaiting_item"),
+        eq(auctionSchedulesTable.ticketChannelId, channel.id),
+      ),
+    )
+    .then((rows) => rows[0]);
+
+  if (pendingAuctionItem) {
+    const desc = content.trim();
+    if (!desc) {
+      await channel.send("⚠️ لازم تكتب حاجة — المزاد على ايه؟");
+      return;
+    }
+
+    await db.update(auctionSchedulesTable)
+      .set({ itemDescription: desc, status: "awaiting_payment_method" })
+      .where(eq(auctionSchedulesTable.id, pendingAuctionItem.id));
+
+    const skipBtn = new ButtonBuilder()
+      .setCustomId(`aucskip_paymethod_${pendingAuctionItem.id}`)
+      .setLabel("⏭️ تخطي")
+      .setStyle(ButtonStyle.Secondary);
+
+    await channel.send({
+      content:
+        `✅ تم تسجيل: **${desc}**\n\n` +
+        `💳 **الدفع ازاي؟** *(اختياري — اكتب ردك أو دوس تخطي)*`,
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(skipBtn)],
+    });
+    return;
+  }
+
+  // ── انتظار طريقة الدفع (اختياري) — awaiting_payment_method ──────────────
+  // بعد الإجابة (أو التخطي عبر الزرار أعلاه) البوت بيحدد الميعاد تلقائياً.
+  const pendingAuctionPayMethod = await db
+    .select()
+    .from(auctionSchedulesTable)
+    .where(
+      and(
+        eq(auctionSchedulesTable.discordUserId, userId),
+        eq(auctionSchedulesTable.status, "awaiting_payment_method"),
+        eq(auctionSchedulesTable.ticketChannelId, channel.id),
+      ),
+    )
+    .then((rows) => rows[0]);
+
+  if (pendingAuctionPayMethod) {
+    const method = content.trim();
+    await db.update(auctionSchedulesTable)
+      .set({ paymentMethod: method || null })
+      .where(eq(auctionSchedulesTable.id, pendingAuctionPayMethod.id));
+
+    if (message.guild) {
+      await finalizeAuctionSlot(message.guild, pendingAuctionPayMethod).catch((e) =>
+        logger.error({ e }, "finalizeAuctionSlot error"),
+      );
+    }
+    return;
   }
 
   // ── انتظار اسم الروم بعد تأكيد الدفع ────────────────────────────────────
@@ -5267,7 +5545,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
-  // ── زرار نوع المزاد (auctype_*) — يعرض الأوقات المتاحة ─────────────────
+  // ── زرار نوع المزاد (auctype_*) — بينشئ تذكرة دفع على طول ───────────────
+  // NOTE: مفيش اختيار موعد هنا خالص. الموعد بيتحدد تلقائياً بعد الدفع
+  //       وبعد ما اليوزر يجاوب على سؤالي "المزاد على ايه" و"الدفع ازاي".
   if (interaction.isButton() && interaction.customId.startsWith("auctype_")) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const aType = interaction.customId.replace("auctype_", "") as AuctionType;
@@ -5277,87 +5557,6 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     }
     const typeCfg = AUCTION_TYPES[aType];
 
-    const { date, hour: currentHour } = getCairoTime();
-
-    // اجلب الحجوزات النشطة لليوم ده
-    const booked = await db
-      .select({ scheduledHour: auctionSchedulesTable.scheduledHour, roomChannelId: auctionSchedulesTable.roomChannelId })
-      .from(auctionSchedulesTable)
-      .where(
-        and(
-          eq(auctionSchedulesTable.scheduledDate, date),
-          ne(auctionSchedulesTable.status, "cancelled"),
-        ),
-      );
-
-    // لكل ساعة: كم غرفة محجوزة؟ (الـ 3 هم الحد الأقصى)
-    const roomsPerHour = new Map<number, number>();
-    for (const b of booked) {
-      roomsPerHour.set(b.scheduledHour, (roomsPerHour.get(b.scheduledHour) ?? 0) + 1);
-    }
-
-    // الأوقات المتاحة: من 10 صباحاً حتى 10 مساءً (10–22) — بعد الساعة الحالية فقط
-    const availableHours = Array.from({ length: 24 }, (_, i) => i)
-      .filter((h) => h >= 10 && h <= 22 && h > currentHour && (roomsPerHour.get(h) ?? 0) < AUCTION_ROOM_CHANNEL_IDS.length);
-
-    if (availableHours.length === 0) {
-      await interaction.editReply({
-        content:
-          `📭 مفيش أوقات متاحة لليوم ده لنوع **${typeCfg.label}**.\n` +
-          `كل الرومات محجوزة أو الوقت خلص. حاول تاني بكرة!`,
-      });
-      return;
-    }
-
-    const guildIconURL = interaction.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
-    const embed = new EmbedBuilder()
-      .setAuthor({ name: "Dragon $hop", iconURL: guildIconURL })
-      .setTitle(`${typeCfg.emoji} اختر موعد المزاد — ${typeCfg.label}`)
-      .setDescription(
-        `**السعر:** ${typeCfg.price.toLocaleString()} كريدت\n` +
-        `**التاريخ:** ${date} (بتوقيت القاهرة)\n\n` +
-        `اضغط على الوقت اللي يناسبك ⬇️\n` +
-        `*(الوقت المختار = بداية المزاد)*`,
-      )
-      .setColor(0xffd700)
-      .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p" });
-
-    if (guildIconURL) embed.setThumbnail(guildIconURL);
-
-    // أزرار الأوقات (max 20 = 4 rows × 5)
-    const slotButtons = availableHours.slice(0, 20).map((h) => {
-      const remaining = AUCTION_ROOM_CHANNEL_IDS.length - (roomsPerHour.get(h) ?? 0);
-      return new ButtonBuilder()
-        .setCustomId(`aucslot_${aType}|${date}|${h}`)
-        .setLabel(`${hourToLabel(h)} (${remaining} متاح)`)
-        .setStyle(ButtonStyle.Success);
-    });
-
-    const slotRows: ActionRowBuilder<ButtonBuilder>[] = [];
-    for (let i = 0; i < slotButtons.length; i += 5) {
-      slotRows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...slotButtons.slice(i, i + 5)));
-    }
-
-    await interaction.editReply({ embeds: [embed], components: slotRows });
-    return;
-  }
-
-  // ── زرار حجز موعد مزاد (aucslot_*) — ينشئ تذكرة دفع ────────────────────
-  if (interaction.isButton() && interaction.customId.startsWith("aucslot_")) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const parts = interaction.customId.replace("aucslot_", "").split("|");
-    if (parts.length !== 3) {
-      await interaction.editReply({ content: "❌ بيانات الموعد غلط." });
-      return;
-    }
-    const [aType, targetDate, hourStr] = parts as [AuctionType, string, string];
-    const targetHour = parseInt(hourStr, 10);
-
-    if (!AUCTION_TYPES[aType] || isNaN(targetHour)) {
-      await interaction.editReply({ content: "❌ بيانات المزاد غير صحيحة." });
-      return;
-    }
-
     const userId   = interaction.user.id;
     const username = interaction.user.username;
 
@@ -5366,28 +5565,8 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       return;
     }
 
-    // تحقق من التوافر مرة تانية (race condition protection)
-    const nowBooked = await db
-      .select({ roomChannelId: auctionSchedulesTable.roomChannelId })
-      .from(auctionSchedulesTable)
-      .where(
-        and(
-          eq(auctionSchedulesTable.scheduledDate, targetDate),
-          eq(auctionSchedulesTable.scheduledHour, targetHour),
-          ne(auctionSchedulesTable.status, "cancelled"),
-        ),
-      );
-    const bookedRoomIds = nowBooked.map((b) => b.roomChannelId).filter(Boolean) as string[];
-    const assignedRoom  = AUCTION_ROOM_CHANNEL_IDS.find((id) => !bookedRoomIds.includes(id));
-
-    if (!assignedRoom) {
-      await interaction.editReply({ content: "❌ هذا الوقت امتلأ للتو. اختر وقتاً آخر." });
-      return;
-    }
-
-    const typeCfg     = AUCTION_TYPES[aType];
     const transferAmt = calcTransferAmount(typeCfg.price);
-    const guild       = interaction.guild!;
+    const guild        = interaction.guild!;
 
     // أنشئ شانل تذكرة المزاد
     const ticketChannel = await guild.channels.create({
@@ -5401,17 +5580,14 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       ],
     });
 
-    // سجّل الحجز في DB
+    // سجّل الحجز في DB — بدون موعد لسه (هيتحدد بعد الدفع + الأسئلة)
     const [auctionRecord] = await db
       .insert(auctionSchedulesTable)
       .values({
         discordUserId:   userId,
         discordUsername: username,
         auctionType:     aType,
-        scheduledDate:   targetDate,
-        scheduledHour:   targetHour,
         status:          "pending_payment",
-        roomChannelId:   assignedRoom,
         ticketChannelId: ticketChannel.id,
         totalPrice:      String(transferAmt),
       })
@@ -5423,15 +5599,14 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .setDescription(
         `مرحباً <@${userId}>! 👋\n\n` +
         `**نوع المزاد:** ${typeCfg.emoji} ${typeCfg.label}\n` +
-        `**الموعد:** ${hourToLabel(targetHour)} — ${targetDate} (توقيت القاهرة)\n` +
         `**السعر:** ${typeCfg.price.toLocaleString()} كريدت\n` +
         `**مبلغ التحويل (مع عمولة ProBot 5%):** \`${transferAmt}\`\n\n` +
         `━━━━━━━━━━━━━━━━━━━━\n` +
         `📋 **أمر التحويل:**\n\`${transferCommand}\`\n` +
         `━━━━━━━━━━━━━━━━━━━━\n\n` +
         `1️⃣ انسخ الأمر وبعثه في سيرفر ProBot\n` +
-        `2️⃣ البوت هيتأكد تلقائياً ويغلق التذكرة\n` +
-        `3️⃣ في الموعد المحدد يبدأ مزادك تلقائياً ✅`,
+        `2️⃣ البوت هيتأكد تلقائياً ويسألك عن تفاصيل المزاد\n` +
+        `3️⃣ بعد ما تجاوب، هيحدد لك ميعاد تلقائياً ✅`,
       )
       .setColor(0xffd700);
 
@@ -5450,6 +5625,128 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
+  // ── زرار تخطي سؤال "الدفع ازاي؟" (aucskip_paymethod_*) ─────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("aucskip_paymethod_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const scheduleId = parseInt(interaction.customId.replace("aucskip_paymethod_", ""), 10);
+    const [sched] = await db.select().from(auctionSchedulesTable).where(eq(auctionSchedulesTable.id, scheduleId));
+
+    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "awaiting_payment_method") {
+      await interaction.editReply({ content: "❌ الخطوة دي مش متاحة دلوقتي." });
+      return;
+    }
+
+    await interaction.editReply({ content: "⏭️ تم التخطي." });
+    await finalizeAuctionSlot(interaction.guild!, sched);
+    return;
+  }
+
+  // ── زرار تغيير الميعاد بعد ما البوت يحدده تلقائي (aucchangeslot_*) ─────
+  if (interaction.isButton() && interaction.customId.startsWith("aucchangeslot_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const scheduleId = parseInt(interaction.customId.replace("aucchangeslot_", ""), 10);
+    const [sched] = await db.select().from(auctionSchedulesTable).where(eq(auctionSchedulesTable.id, scheduleId));
+
+    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "scheduled") {
+      await interaction.editReply({ content: "❌ الحجز ده مش موجود أو مش قابل للتغيير دلوقتي." });
+      return;
+    }
+
+    // أوقف الإقفال التلقائي للتذكرة لحد ما اليوزر يختار ميعاد جديد
+    cancelAuctionTicketAutoClose(scheduleId);
+
+    const { date, hour: currentHour } = getCairoTime();
+    const booked = await db
+      .select({ scheduledHour: auctionSchedulesTable.scheduledHour, roomChannelId: auctionSchedulesTable.roomChannelId })
+      .from(auctionSchedulesTable)
+      .where(
+        and(
+          eq(auctionSchedulesTable.scheduledDate, date),
+          inArray(auctionSchedulesTable.status, ["scheduled", "active", "completed"]),
+          ne(auctionSchedulesTable.id, scheduleId),
+        ),
+      );
+
+    const usedRoomsByHour = new Map<number, Set<string>>();
+    for (const b of booked) {
+      if (b.scheduledHour == null || !b.roomChannelId) continue;
+      if (!usedRoomsByHour.has(b.scheduledHour)) usedRoomsByHour.set(b.scheduledHour, new Set());
+      usedRoomsByHour.get(b.scheduledHour)!.add(b.roomChannelId);
+    }
+
+    const availableHours = Array.from({ length: 13 }, (_, i) => i + 10) // 10 → 22
+      .filter((h) => h > currentHour && (usedRoomsByHour.get(h)?.size ?? 0) < AUCTION_ROOM_CHANNEL_IDS.length);
+
+    if (availableHours.length === 0) {
+      await interaction.editReply({ content: "📭 مفيش مواعيد متاحة تانية اليوم — ميعادك الحالي هيفضل زي ما هو." });
+      scheduleAuctionTicketAutoClose(scheduleId, interaction.channel as TextChannel, 60_000);
+      return;
+    }
+
+    const slotButtons = availableHours.slice(0, 20).map((h) =>
+      new ButtonBuilder()
+        .setCustomId(`aucnewslot_${scheduleId}|${date}|${h}`)
+        .setLabel(hourToLabel(h))
+        .setStyle(ButtonStyle.Success),
+    );
+    const slotRows: ActionRowBuilder<ButtonBuilder>[] = [];
+    for (let i = 0; i < slotButtons.length; i += 5) {
+      slotRows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(...slotButtons.slice(i, i + 5)));
+    }
+
+    await interaction.editReply({ content: "⬇️ اختار الميعاد الجديد:", components: slotRows });
+    return;
+  }
+
+  // ── زرار اختيار ميعاد جديد (aucnewslot_*) ──────────────────────────────
+  if (interaction.isButton() && interaction.customId.startsWith("aucnewslot_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const parts = interaction.customId.replace("aucnewslot_", "").split("|");
+    if (parts.length !== 3) {
+      await interaction.editReply({ content: "❌ بيانات الموعد غلط." });
+      return;
+    }
+    const scheduleId = parseInt(parts[0], 10);
+    const newDate    = parts[1];
+    const newHour    = parseInt(parts[2], 10);
+
+    const [sched] = await db.select().from(auctionSchedulesTable).where(eq(auctionSchedulesTable.id, scheduleId));
+    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "scheduled") {
+      await interaction.editReply({ content: "❌ الحجز ده مش موجود." });
+      return;
+    }
+
+    // تحقق من التوافر مرة تانية (race condition protection)
+    const nowBooked = await db
+      .select({ roomChannelId: auctionSchedulesTable.roomChannelId })
+      .from(auctionSchedulesTable)
+      .where(
+        and(
+          eq(auctionSchedulesTable.scheduledDate, newDate),
+          eq(auctionSchedulesTable.scheduledHour, newHour),
+          inArray(auctionSchedulesTable.status, ["scheduled", "active", "completed"]),
+          ne(auctionSchedulesTable.id, scheduleId),
+        ),
+      );
+    const bookedRoomIds = nowBooked.map((b) => b.roomChannelId).filter(Boolean) as string[];
+    const freeRoom       = AUCTION_ROOM_CHANNEL_IDS.find((r) => !bookedRoomIds.includes(r));
+
+    if (!freeRoom) {
+      await interaction.editReply({ content: "❌ الميعاد ده امتلأ للتو. جرب ميعاد تاني." });
+      return;
+    }
+
+    await db.update(auctionSchedulesTable)
+      .set({ scheduledDate: newDate, scheduledHour: newHour, roomChannelId: freeRoom, delayMinutes: 0, reminded: false })
+      .where(eq(auctionSchedulesTable.id, scheduleId));
+
+    await interaction.editReply({ content: `✅ تم تغيير ميعادك إلى **${hourToLabel(newHour)}** — ${newDate}.` });
+
+    if (interaction.guild) refreshAuctionScheduleMsg(interaction.guild).catch(() => {});
+    scheduleAuctionTicketAutoClose(scheduleId, interaction.channel as TextChannel, 30_000);
+    return;
+  }
+
   // ── زرار المواعيد المحجوزة (auction_schedule_view) ──────────────────────
   if (interaction.isButton() && interaction.customId === "auction_schedule_view") {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
@@ -5462,7 +5759,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       .where(
         and(
           eq(auctionSchedulesTable.scheduledDate, date),
-          ne(auctionSchedulesTable.status, "cancelled"),
+          inArray(auctionSchedulesTable.status, ["scheduled", "active", "completed"]),
         ),
       );
 
@@ -5481,10 +5778,9 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (guildIconURL) embed.setThumbnail(guildIconURL);
 
     const statusEmoji: Record<string, string> = {
-      pending_payment: "⏳",
-      scheduled:       "✅",
-      active:          "🔴",
-      completed:       "✔️",
+      scheduled: "✅",
+      active:    "🔴",
+      completed: "✔️",
     };
 
     const typeEmoji: Record<string, string> = {
@@ -5494,12 +5790,12 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     };
 
     // رتّب حسب الساعة
-    schedules.sort((a, b) => a.scheduledHour - b.scheduledHour);
+    schedules.sort((a, b) => (a.scheduledHour ?? 0) - (b.scheduledHour ?? 0));
 
     const lines = schedules.map((s) => {
       const st   = statusEmoji[s.status] ?? "❓";
       const te   = typeEmoji[s.auctionType] ?? "";
-      const time = `${hourToLabel(s.scheduledHour)}:00`;
+      const time = `${hourToLabel(s.scheduledHour ?? 0)}:00`;
       const type = AUCTION_TYPES[s.auctionType as AuctionType]?.label ?? s.auctionType;
       return `${st} **${time}** — ${te} ${type} — <@${s.discordUserId}>`;
     });
