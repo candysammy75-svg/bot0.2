@@ -3775,8 +3775,9 @@ client.on(Events.MessageCreate, async (message: Message) => {
   }
 
   // ── أونر يمنشن البوت في تكت شراء → تخطي الدفع ───────────────────────────
-  // لو أونر (OWNER_ID أو Administrator) كتب @البوت في تكت شراء متجر pending،
-  // البوت يرد "حاضر يعمنا" ويعتبر الدفع اتم ويسأل الشاري عن اسم المتجر.
+  // لو أونر (OWNER_ID أو Administrator) كتب @البوت في تكت شراء متجر أو مزاد pending،
+  // البوت يرد "حاضر يعمنا" ويعتبر الدفع اتم ويكمل الخطوة اللي بعده مباشرة
+  // (اسم المتجر للشراء العادي، أو سؤال "المزاد على ايه؟" للمزاد).
   if (
     client.user &&
     message.mentions.has(client.user.id) &&
@@ -3817,6 +3818,37 @@ client.on(Events.MessageCreate, async (message: Message) => {
           `✅ تم تأكيد الطلب!\n\n` +
           `<@${pendingTicket.discordUserId}> اكتب اسم الروم اللي عايزه هنا ⬇️\n` +
           `*(بالعربي أو الانجليزي، بدون زخارف أو إيموجيات)*`
+        );
+        return;
+      }
+
+      // ابحث عن تذكرة مزاد pending_payment في نفس الشانل
+      const pendingAucTicket = await db
+        .select()
+        .from(auctionSchedulesTable)
+        .where(
+          and(
+            eq(auctionSchedulesTable.ticketChannelId, channel.id),
+            eq(auctionSchedulesTable.status, "pending_payment"),
+          ),
+        )
+        .then((rows) => rows[0]);
+
+      if (pendingAucTicket) {
+        // ✅ رد الأونر
+        await message.reply("حاضر يعمنا <:cry:1504829193278460004>");
+
+        // اعتبر الدفع اتم — انقل لمرحلة سؤال "المزاد على ايه؟"
+        await db
+          .update(auctionSchedulesTable)
+          .set({ status: "awaiting_item" })
+          .where(eq(auctionSchedulesTable.id, pendingAucTicket.id));
+
+        await channel.send(
+          `✅ **تم تأكيد الدفع!**\n\n` +
+          `<@${pendingAucTicket.discordUserId}>\n\n` +
+          `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
+          `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
         );
         return;
       }
