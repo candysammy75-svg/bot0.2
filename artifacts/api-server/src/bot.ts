@@ -579,6 +579,7 @@ interface PendingAucMentionPurchase {
   transferAmt:     number;
   guildId:         string;
   ticketChannelId: string;
+  dbRecordId:      number;   // ID الـ row في DB — للتنظيف عند الإلغاء أو الـ timeout
   expiresAt:       number;
   timeoutId:       ReturnType<typeof setTimeout>;
 }
@@ -2664,6 +2665,7 @@ client.on(Events.MessageCreate, async (message: Message) => {
 
       // لو مفيش تذكرة شراء عادية، ابحث في تذاكر المزادات
       if (!ticketPurchase) {
+        // تذكرة مزاد مباشر (auctype_) — انتظار الدفع
         const auctionTicket = await db
           .select()
           .from(auctionSchedulesTable)
@@ -2675,7 +2677,21 @@ client.on(Events.MessageCreate, async (message: Message) => {
           )
           .then((r) => r[0]);
 
-        if (!auctionTicket) {
+        // تذكرة شراء إعلان منشن مزاد (buy_auc_mention_*) — انتظار الدفع
+        const mentionAdTicket = !auctionTicket
+          ? await db
+              .select()
+              .from(auctionSchedulesTable)
+              .where(
+                and(
+                  eq(auctionSchedulesTable.ticketChannelId, channel.id),
+                  eq(auctionSchedulesTable.status, "pending_mention_payment"),
+                ),
+              )
+              .then((r) => r[0])
+          : undefined;
+
+        if (!auctionTicket && !mentionAdTicket) {
           const mentionIds = [...searchText.matchAll(/<@!?(\d+)>/g)].map((m) => m[1]);
 
           // ── 1. تحقق من منشن معلق ──────────────────────────────────────────
@@ -3177,35 +3193,110 @@ client.on(Events.MessageCreate, async (message: Message) => {
               }).catch(() => {});
             } catch { /* ignore */ }
 
-            logger.info({ userId: matchedAucMention.userId, mType: matchedAucMention.mentionType }, "Auc mention payment confirmed — awaiting details modal");
+            logger.info({ userId: matchedAucMention.userId, mType: matchedAucMention.mentionType }, "Auc mention payment confirmed — awaiting details modal (legacy map path)");
             return;
           }
-        }
+          // لو وصلنا هنا: مفيش أي match لأي فلو — نتجاهل ببساطة
+          return;
+        } else if (mentionAdTicket) {
+          // ── تأكيد دفع تذكرة منشن إعلان مزاد ──────────────────────────────
+          const amTypeCfg   = AUCTION_TYPES[mentionAdTicket.auctionType as AuctionType];
+          const requiredAmtAM    = Number(mentionAdTicket.totalPrice);
+          const netRequiredAmtAM = Math.floor(requiredAmtAM * (1 - PROBOT_FEE));
 
-        // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
-        // ProBot بيبلغ عن المبلغ الـ net اللي وصل للمستلم.
-        // نحوّل totalPrice لـ net قبل المقارنة: net = gross * (1 - fee)
-        const requiredAmt    = Number(auctionTicket.totalPrice);
-        const netRequiredAmt = Math.floor(requiredAmt * (1 - PROBOT_FEE));
-        if (paid >= netRequiredAmt) {
-          // بعد تأكيد الدفع: منسألش على موعد — بنسأل على تفاصيل المزاد الأول،
-          // وبعدها البوت هيحدد الميعاد تلقائياً (شوف finalizeAuctionSlot).
+          if (paid < netRequiredAmtAM) {
+            await channel.send(
+              `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmtAM}). يرجى إعادة التحويل.`,
+            );
+            return;
+          }
+
+          // امسح من الـ pending Map (عشان نوقف الـ timeout ونمنع تكرار)
+          const pendingAmEntry = pendingAucMentionPurchases.get(mentionAdTicket.discordUserId);
+          if (pendingAmEntry) {
+            clearTimeout(pendingAmEntry.timeoutId);
+            pendingAucMentionPurchases.delete(mentionAdTicket.discordUserId);
+          }
+
+          // ready token ينتهي بعد 10 دقايق لو اليوزر ما ضغطش الزرار
+          const amReadyTimeoutId = setTimeout(() => {
+            pendingAucMentionReady.delete(mentionAdTicket.discordUserId);
+            logger.info({ userId: mentionAdTicket.discordUserId }, "Auc mention ready token expired");
+          }, 10 * 60 * 1000);
+
+          pendingAucMentionReady.set(mentionAdTicket.discordUserId, {
+            mentionType:     mentionAdTicket.auctionType as AuctionType,
+            guildId:         message.guild!.id,
+            ticketChannelId: mentionAdTicket.ticketChannelId!,
+            timeoutId:       amReadyTimeoutId,
+          });
+
+          // حدّث الـ status في DB
           await db.update(auctionSchedulesTable)
-            .set({ status: "awaiting_item" })
-            .where(eq(auctionSchedulesTable.id, auctionTicket.id));
+            .set({ status: "awaiting_mention_details" })
+            .where(eq(auctionSchedulesTable.id, mentionAdTicket.id));
 
-          await channel.send(
-            `✅ **تم تأكيد الدفع!**\n\n` +
-            `<@${auctionTicket.discordUserId}>\n\n` +
-            `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
-            `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
-          );
+          // ابعت رسالة تأكيد وزرار التفاصيل في التذكرة
+          const DIV_AMDB   = "ـﮩ════════════════ﮩـ";
+          const gIAMDB     = message.guild?.iconURL({ extension: "png", size: 256 }) ?? undefined;
+          const amDbConfEmbed = new EmbedBuilder()
+            .setAuthor({ name: "Dragon $hop", iconURL: gIAMDB })
+            .setTitle(`✅ تم تأكيد الدفع!`)
+            .setDescription(`<@${mentionAdTicket.discordUserId}> ${MONEY_EMOJI}\n> ${DIV_AMDB}`)
+            .setColor(0x00ff88)
+            .addFields({
+              name:  `${STAR_EMOJI} الخطوة التالية`,
+              value: `> ${MONEY_EMOJI} اضغط الزر عشان تختار تفاصيل إعلانك (الروم + الساعة + العكلة)\n> ${DIV_AMDB}`,
+              inline: false,
+            })
+            .setFooter({ text: "Dev By : mostafa9321 & ahmed_.p", iconURL: gIAMDB });
+
+          const amDbFiles: AttachmentBuilder[] = [];
+          if (fs.existsSync(DRAGON_TEXT_BANNER_PATH)) {
+            amDbFiles.push(new AttachmentBuilder(DRAGON_TEXT_BANNER_PATH, { name: "dragon_text_banner.webp" }));
+            amDbConfEmbed.setImage("attachment://dragon_text_banner.webp");
+          }
+
+          const detailsBtnAm = new ButtonBuilder()
+            .setCustomId(`auc_mention_details_btn_${mentionAdTicket.discordUserId}_${mentionAdTicket.auctionType}`)
+            .setLabel(`${amTypeCfg?.emoji ?? "🔔"} اختار تفاصيل الإعلان`)
+            .setStyle(ButtonStyle.Primary);
+
+          await channel.send({
+            content:    `<@${mentionAdTicket.discordUserId}>`,
+            embeds:     [amDbConfEmbed],
+            files:      amDbFiles,
+            components: [new ActionRowBuilder<ButtonBuilder>().addComponents(detailsBtnAm)],
+          }).catch(() => {});
+
+          logger.info({ userId: mentionAdTicket.discordUserId, mType: mentionAdTicket.auctionType }, "Auc mention-ad payment confirmed via DB ticket — awaiting details modal");
+          return;
         } else {
-          await channel.send(
-            `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmt}). يرجى إعادة التحويل.`,
-          );
+          // ── تأكيد دفع تذكرة مزاد مباشر (auctype_) ────────────────────────
+          // totalPrice في الـ DB هو مبلغ التحويل الكامل (gross).
+          // ProBot بيبلغ عن المبلغ الـ net اللي وصل للمستلم.
+          const requiredAmt    = Number(auctionTicket!.totalPrice);
+          const netRequiredAmt = Math.floor(requiredAmt * (1 - PROBOT_FEE));
+          if (paid >= netRequiredAmt) {
+            // بعد تأكيد الدفع: منسألش على موعد — بنسأل على تفاصيل المزاد الأول،
+            // وبعدها البوت هيحدد الميعاد تلقائياً (شوف finalizeAuctionSlot).
+            await db.update(auctionSchedulesTable)
+              .set({ status: "awaiting_item" })
+              .where(eq(auctionSchedulesTable.id, auctionTicket!.id));
+
+            await channel.send(
+              `✅ **تم تأكيد الدفع!**\n\n` +
+              `<@${auctionTicket!.discordUserId}>\n\n` +
+              `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
+              `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
+            );
+          } else {
+            await channel.send(
+              `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmt}). يرجى إعادة التحويل.`,
+            );
+          }
+          return;
         }
-        return;
       }
 
       // totalPrice في الـ DB هو gross transfer amount.
@@ -5146,9 +5237,26 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       ],
     });
 
+    // سجّل في DB على طول عشان ProBot detection يلاقيه بـ channel.id
+    const [amRecord] = await db
+      .insert(auctionSchedulesTable)
+      .values({
+        discordUserId:   userId,
+        discordUsername: username,
+        auctionType:     mType,
+        status:          "pending_mention_payment",
+        ticketChannelId: ticketChannel.id,
+        totalPrice:      String(transferAmt),
+      })
+      .returning();
+
     const expiresAt = Date.now() + 5 * 60 * 1000; // 5 دقايق
-    const timeoutId = setTimeout(() => {
+    const timeoutId = setTimeout(async () => {
       pendingAucMentionPurchases.delete(userId);
+      await db.update(auctionSchedulesTable)
+        .set({ status: "cancelled" })
+        .where(eq(auctionSchedulesTable.id, amRecord.id))
+        .catch(() => {});
       ticketChannel.delete("Auc mention ticket timed out").catch(() => {});
       logger.info({ userId, mType }, "Auction mention purchase timed out");
     }, 5 * 60 * 1000);
@@ -5158,6 +5266,7 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
       netPrice, transferAmt,
       guildId:         guild.id,
       ticketChannelId: ticketChannel.id,
+      dbRecordId:      amRecord.id,
       expiresAt, timeoutId,
     });
 
@@ -5231,6 +5340,10 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     if (pendingAm) {
       clearTimeout(pendingAm.timeoutId);
       pendingAucMentionPurchases.delete(ownerIdAm);
+      await db.update(auctionSchedulesTable)
+        .set({ status: "cancelled" })
+        .where(eq(auctionSchedulesTable.id, pendingAm.dbRecordId))
+        .catch(() => {});
     }
 
     await interaction.editReply({ content: "🔒 تم إلغاء الطلب — التذكرة هتقفل دلوقتي." });
