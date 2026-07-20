@@ -3278,18 +3278,24 @@ client.on(Events.MessageCreate, async (message: Message) => {
           const requiredAmt    = Number(auctionTicket!.totalPrice);
           const netRequiredAmt = Math.floor(requiredAmt * (1 - PROBOT_FEE));
           if (paid >= netRequiredAmt) {
-            // بعد تأكيد الدفع: منسألش على موعد — بنسأل على تفاصيل المزاد الأول،
-            // وبعدها البوت هيحدد الميعاد تلقائياً (شوف finalizeAuctionSlot).
+            // بعد تأكيد الدفع: بنبعت زرار يفتح مودال التفاصيل —
+            // اليوزر بيكتب "المزاد على ايه" و"الدفع ازاي" في خانات المودال.
             await db.update(auctionSchedulesTable)
               .set({ status: "awaiting_item" })
               .where(eq(auctionSchedulesTable.id, auctionTicket!.id));
 
-            await channel.send(
-              `✅ **تم تأكيد الدفع!**\n\n` +
-              `<@${auctionTicket!.discordUserId}>\n\n` +
-              `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
-              `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
-            );
+            const itemDetailsBtn = new ButtonBuilder()
+              .setCustomId(`auc_item_modal_btn_${auctionTicket!.id}`)
+              .setLabel("📝 أدخل تفاصيل المزاد")
+              .setStyle(ButtonStyle.Primary);
+
+            await channel.send({
+              content:
+                `✅ **تم تأكيد الدفع!**\n\n` +
+                `<@${auctionTicket!.discordUserId}>\n\n` +
+                `📦 **اضغط الزر عشان تدخل تفاصيل المزاد — البوت هيحجزلك ميعاد تلقائياً بعدها.**`,
+              components: [new ActionRowBuilder<ButtonBuilder>().addComponents(itemDetailsBtn)],
+            });
           } else {
             await channel.send(
               `⚠️ المبلغ المحوّل (${paid}) أقل من المطلوب (${netRequiredAmt}). يرجى إعادة التحويل.`,
@@ -3931,90 +3937,33 @@ client.on(Events.MessageCreate, async (message: Message) => {
         // ✅ رد الأونر
         await message.reply("حاضر يعمنا <:cry:1504829193278460004>");
 
-        // اعتبر الدفع اتم — انقل لمرحلة سؤال "المزاد على ايه؟"
+        // اعتبر الدفع اتم — بعت زرار التفاصيل
         await db
           .update(auctionSchedulesTable)
           .set({ status: "awaiting_item" })
           .where(eq(auctionSchedulesTable.id, pendingAucTicket.id));
 
-        await channel.send(
-          `✅ **تم تأكيد الدفع!**\n\n` +
-          `<@${pendingAucTicket.discordUserId}>\n\n` +
-          `📦 **قبل ما نحدد ميعادك، جاوب على السؤال ده:**\n` +
-          `**المزاد على ايه؟** *(إجباري — اكتب ردك هنا)*`,
-        );
+        const ownerSkipDetailsBtn = new ButtonBuilder()
+          .setCustomId(`auc_item_modal_btn_${pendingAucTicket.id}`)
+          .setLabel("📝 أدخل تفاصيل المزاد")
+          .setStyle(ButtonStyle.Primary);
+
+        await channel.send({
+          content:
+            `✅ **تم تأكيد الدفع!**\n\n` +
+            `<@${pendingAucTicket.discordUserId}>\n\n` +
+            `📦 **اضغط الزر عشان تدخل تفاصيل المزاد — البوت هيحجزلك ميعاد تلقائياً بعدها.**`,
+          components: [new ActionRowBuilder<ButtonBuilder>().addComponents(ownerSkipDetailsBtn)],
+        });
         return;
       }
     }
   }
 
-  // ── انتظار وصف المزاد بعد تأكيد الدفع (awaiting_item) ───────────────────
-  // NOTE: السؤال ده إجباري — "المزاد على ايه؟". بعد الإجابة بننتقل لسؤال
-  //       "الدفع ازاي؟" الاختياري (awaiting_payment_method).
-  const pendingAuctionItem = await db
-    .select()
-    .from(auctionSchedulesTable)
-    .where(
-      and(
-        eq(auctionSchedulesTable.discordUserId, userId),
-        eq(auctionSchedulesTable.status, "awaiting_item"),
-        eq(auctionSchedulesTable.ticketChannelId, channel.id),
-      ),
-    )
-    .then((rows) => rows[0]);
-
-  if (pendingAuctionItem) {
-    const desc = content.trim();
-    if (!desc) {
-      await channel.send("⚠️ لازم تكتب حاجة — المزاد على ايه؟");
-      return;
-    }
-
-    await db.update(auctionSchedulesTable)
-      .set({ itemDescription: desc, status: "awaiting_payment_method" })
-      .where(eq(auctionSchedulesTable.id, pendingAuctionItem.id));
-
-    const skipBtn = new ButtonBuilder()
-      .setCustomId(`aucskip_paymethod_${pendingAuctionItem.id}`)
-      .setLabel("⏭️ تخطي")
-      .setStyle(ButtonStyle.Secondary);
-
-    await channel.send({
-      content:
-        `✅ تم تسجيل: **${desc}**\n\n` +
-        `💳 **الدفع ازاي؟** *(اختياري — اكتب ردك أو دوس تخطي)*`,
-      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(skipBtn)],
-    });
-    return;
-  }
-
-  // ── انتظار طريقة الدفع (اختياري) — awaiting_payment_method ──────────────
-  // بعد الإجابة (أو التخطي عبر الزرار أعلاه) البوت بيحدد الميعاد تلقائياً.
-  const pendingAuctionPayMethod = await db
-    .select()
-    .from(auctionSchedulesTable)
-    .where(
-      and(
-        eq(auctionSchedulesTable.discordUserId, userId),
-        eq(auctionSchedulesTable.status, "awaiting_payment_method"),
-        eq(auctionSchedulesTable.ticketChannelId, channel.id),
-      ),
-    )
-    .then((rows) => rows[0]);
-
-  if (pendingAuctionPayMethod) {
-    const method = content.trim();
-    await db.update(auctionSchedulesTable)
-      .set({ paymentMethod: method || null })
-      .where(eq(auctionSchedulesTable.id, pendingAuctionPayMethod.id));
-
-    if (message.guild) {
-      await finalizeAuctionSlot(message.guild, pendingAuctionPayMethod).catch((e) =>
-        logger.error({ e }, "finalizeAuctionSlot error"),
-      );
-    }
-    return;
-  }
+  // ── awaiting_item / awaiting_payment_method ──────────────────────────────
+  // الأسئلة دي بقت تتجاوب من خلال المودال (auc_item_modal_btn_*) مش نص.
+  // مفيش هاندلر نص هنا — البوت بيتجاهل أي رسالة في التذكرة بعد تأكيد الدفع
+  // لحد ما اليوزر يضغط الزرار ويسبمت المودال.
 
   // ── انتظار اسم الروم بعد تأكيد الدفع ────────────────────────────────────
   // NOTE: بعد ما ProBot يتحقق، الـ status بيبقى "awaiting_room_name".
@@ -5812,19 +5761,77 @@ client.on(Events.InteractionCreate, async (interaction: Interaction) => {
     return;
   }
 
-  // ── زرار تخطي سؤال "الدفع ازاي؟" (aucskip_paymethod_*) ─────────────────
-  if (interaction.isButton() && interaction.customId.startsWith("aucskip_paymethod_")) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-    const scheduleId = parseInt(interaction.customId.replace("aucskip_paymethod_", ""), 10);
+  // ── زرار فتح مودال تفاصيل المزاد (auc_item_modal_btn_*) ─────────────────
+  // customId: auc_item_modal_btn_{scheduleId}
+  // بيفتح مودال فيه خانتين: "المزاد على ايه؟" (إجباري) + "الدفع ازاي؟" (اختياري)
+  if (interaction.isButton() && interaction.customId.startsWith("auc_item_modal_btn_")) {
+    const scheduleId = parseInt(interaction.customId.replace("auc_item_modal_btn_", ""), 10);
     const [sched] = await db.select().from(auctionSchedulesTable).where(eq(auctionSchedulesTable.id, scheduleId));
 
-    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "awaiting_payment_method") {
-      await interaction.editReply({ content: "❌ الخطوة دي مش متاحة دلوقتي." });
+    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "awaiting_item") {
+      await interaction.reply({ content: "❌ الزرار ده مش متاح دلوقتي.", flags: MessageFlags.Ephemeral });
       return;
     }
 
-    await interaction.editReply({ content: "⏭️ تم التخطي." });
-    await finalizeAuctionSlot(interaction.guild!, sched);
+    const modal = new ModalBuilder()
+      .setCustomId(`auc_item_modal_submit_${scheduleId}`)
+      .setTitle("تفاصيل المزاد");
+
+    const itemInput = new TextInputBuilder()
+      .setCustomId("auc_item_desc")
+      .setLabel("المزاد على ايه؟ (إجباري)")
+      .setStyle(TextInputStyle.Paragraph)
+      .setPlaceholder("مثال: ايفون 15 برو ماكس — جديد")
+      .setRequired(true)
+      .setMaxLength(500);
+
+    const payInput = new TextInputBuilder()
+      .setCustomId("auc_pay_method")
+      .setLabel("الدفع ازاي؟ (اختياري)")
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder("مثال: فودافون كاش / انستاباي / كاش")
+      .setRequired(false)
+      .setMaxLength(200);
+
+    modal.addComponents(
+      new ActionRowBuilder<TextInputBuilder>().addComponents(itemInput),
+      new ActionRowBuilder<TextInputBuilder>().addComponents(payInput),
+    );
+
+    await interaction.showModal(modal);
+    return;
+  }
+
+  // ── مودال تفاصيل المزاد — submit (auc_item_modal_submit_*) ───────────────
+  if (interaction.isModalSubmit() && interaction.customId.startsWith("auc_item_modal_submit_")) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    const scheduleId = parseInt(interaction.customId.replace("auc_item_modal_submit_", ""), 10);
+    const [sched] = await db.select().from(auctionSchedulesTable).where(eq(auctionSchedulesTable.id, scheduleId));
+
+    if (!sched || sched.discordUserId !== interaction.user.id || sched.status !== "awaiting_item") {
+      await interaction.editReply({ content: "❌ الطلب ده انتهى أو مش بتاعك." });
+      return;
+    }
+
+    const itemDesc  = interaction.fields.getTextInputValue("auc_item_desc").trim();
+    const payMethod = interaction.fields.getTextInputValue("auc_pay_method").trim() || null;
+
+    if (!itemDesc) {
+      await interaction.editReply({ content: "❌ لازم تكتب المزاد على ايه." });
+      return;
+    }
+
+    await db.update(auctionSchedulesTable)
+      .set({ itemDescription: itemDesc, paymentMethod: payMethod, status: "awaiting_item" })
+      .where(eq(auctionSchedulesTable.id, sched.id));
+
+    await interaction.editReply({ content: "✅ تم — البوت بيحجزلك ميعاد دلوقتي..." });
+
+    if (interaction.guild) {
+      await finalizeAuctionSlot(interaction.guild, { ...sched, itemDescription: itemDesc, paymentMethod: payMethod }).catch((e) =>
+        logger.error({ e }, "finalizeAuctionSlot error from modal submit"),
+      );
+    }
     return;
   }
 
